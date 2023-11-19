@@ -849,10 +849,11 @@ impl Image {
     #[inline(always)]
     pub fn get_color_at(&self, coords: UVec3) -> Result<Color, TextureAccessError> {
         let Some(bytes) = self.pixel_bytes(coords) else {
-            return Err(TextureAccessError::OutOfBounds(format!(
-                "x: {}, y: {}, z: {}",
-                coords.x, coords.y, coords.z
-            )));
+            return Err(TextureAccessError::OutOfBounds {
+                x: coords.x,
+                y: coords.y,
+                z: coords.z,
+            });
         };
 
         match self.texture_descriptor.format {
@@ -964,10 +965,9 @@ impl Image {
                 let g = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
                 Ok(Color::rgba_linear(r, g, 0.0, 1.0))
             }
-            _ => Err(TextureAccessError::UnsupportedTextureFormat(format!(
-                "{:?}",
-                self.texture_descriptor.format
-            ))),
+            _ => Err(TextureAccessError::UnsupportedTextureFormat(
+                self.texture_descriptor.format,
+            )),
         }
     }
 
@@ -998,10 +998,11 @@ impl Image {
         let format = self.texture_descriptor.format;
 
         let Some(bytes) = self.pixel_bytes_mut(coords) else {
-            return Err(TextureAccessError::OutOfBounds(format!(
-                "x: {}, y: {}, z: {}",
-                coords.x, coords.y, coords.z
-            )));
+            return Err(TextureAccessError::OutOfBounds {
+                x: coords.x,
+                y: coords.y,
+                z: coords.z,
+            });
         };
 
         match format {
@@ -1119,10 +1120,9 @@ impl Image {
                 bytes[4..8].copy_from_slice(&f32::to_le_bytes(g));
             }
             _ => {
-                return Err(TextureAccessError::UnsupportedTextureFormat(format!(
-                    "{:?}",
-                    self.texture_descriptor.format
-                )));
+                return Err(TextureAccessError::UnsupportedTextureFormat(
+                    self.texture_descriptor.format,
+                ));
             }
         }
         Ok(())
@@ -1154,7 +1154,7 @@ pub enum TranscodeFormat {
 #[derive(Error, Debug)]
 pub enum TextureAccessError {
     #[error("out of bounds (x: {x}, y: {y}, z: {z})")]
-    OutOfBounds { x: f32, y: f32, z: f32 },
+    OutOfBounds { x: u32, y: u32, z: u32 },
     #[error("unsupported texture format: {0:?}")]
     UnsupportedTextureFormat(TextureFormat),
 }
