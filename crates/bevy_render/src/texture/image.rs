@@ -824,7 +824,7 @@ impl Image {
 
     /// Read the color of a specific pixel (1D texture).
     ///
-    /// See [`get_color_at`] for more details.
+    /// See [`get_color_at`](Self::get_color_at) for more details.
     #[inline(always)]
     pub fn get_color_at_1d(&self, x: u32) -> Result<Color, TextureAccessError> {
         if self.texture_descriptor.dimension != TextureDimension::D1 {
@@ -867,7 +867,7 @@ impl Image {
 
     /// Read the color of a specific pixel (3D texture).
     ///
-    /// See [`get_color_at`] for more details.
+    /// See [`get_color_at`](Self::get_color_at) for more details.
     #[inline(always)]
     pub fn get_color_at_3d(&self, x: u32, y: u32, z: u32) -> Result<Color, TextureAccessError> {
         if self.texture_descriptor.dimension != TextureDimension::D3 {
@@ -878,7 +878,7 @@ impl Image {
 
     /// Change the color of a specific pixel (1D texture).
     ///
-    /// See [`set_color_at`] for more details.
+    /// See [`set_color_at`](Self::set_color_at) for more details.
     #[inline(always)]
     pub fn set_color_at_1d(&mut self, x: u32, color: Color) -> Result<(), TextureAccessError> {
         if self.texture_descriptor.dimension != TextureDimension::D1 {
@@ -919,7 +919,7 @@ impl Image {
 
     /// Change the color of a specific pixel (3D texture).
     ///
-    /// See [`set_color_at`] for more details.
+    /// See [`set_color_at`](Self::set_color_at) for more details.
     #[inline(always)]
     pub fn set_color_at_3d(
         &mut self,
