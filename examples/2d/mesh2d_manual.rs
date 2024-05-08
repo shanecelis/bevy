@@ -43,6 +43,41 @@ fn main() {
         .run();
 }
 
+fn insert_dist(mesh: &mut Mesh) {
+    assert!(mesh.indices().is_none(), "`insert_dist` can't work on indexed geometry. Consider calling `Mesh::duplicate_vertices`.");
+
+    assert!(
+        matches!(mesh.primitive_topology(), PrimitiveTopology::TriangleList),
+        "`insert_dist` can only work on `TriangleList`s"
+    );
+
+    let positions = mesh
+        .attribute(Mesh::ATTRIBUTE_POSITION)
+        .unwrap()
+        .as_float3()
+        .expect("`Mesh::ATTRIBUTE_POSITION` vertex attributes should be of type `float3`");
+
+    let dists: Vec<_> = positions
+        .chunks_exact(3)
+        .flat_map(|p| tri_dist(p[0], p[1], p[2]))
+        // .flat_map(|normal| [normal; 3])
+        .collect();
+
+    mesh.insert_attribute(MeshVertexAttribute::new("Tri_Dist", 2, VertexFormat::Float32x3), dists);
+}
+
+fn tri_dist(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [[f32; 3]; 3] {
+    let (p0, p1, p2) = (Vec3::from(a), Vec3::from(b), Vec3::from(c));
+    let v0 = p2.xy() - p1.xy();
+    let v1 = p2.xy() - p0.xy();
+    let v2 = p1.xy() - p0.xy();
+    let area = (v1.x * v2.y - v1.y * v2.x).abs();
+    let d0 = Vec3::X * area/v0.length();
+    let d1 = Vec3::Y * area/v1.length();
+    let d2 = Vec3::Z * area/v2.length();
+    [d0.into(), d1.into(), d2.into()]
+}
+
 fn star(
     mut commands: Commands,
     // We will add a new Mesh for the star being created
@@ -105,6 +140,8 @@ fn star(
         indices.extend_from_slice(&[0, i, i - 1]);
     }
     star.insert_indices(Indices::U32(indices));
+    star.duplicate_vertices();
+    insert_dist(&mut star);
 
     // We can now spawn the entities for the star and the camera
     commands.spawn((
@@ -151,6 +188,8 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
             VertexFormat::Float32x3,
             // Color
             VertexFormat::Uint32,
+            // Dist
+            VertexFormat::Float32x3,
         ];
 
         let vertex_layout =
@@ -232,6 +271,7 @@ struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
     @location(1) color: u32,
+    @location(2) dist: vec3<f32>,
 };
 
 struct VertexOutput {
@@ -239,6 +279,7 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     // We pass the vertex color to the fragment shader in location 0
     @location(0) color: vec4<f32>,
+    @location(1) dist: vec3<f32>,
 };
 
 /// Entry point for the vertex shader
@@ -250,6 +291,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.clip_position = mesh2d_functions::mesh2d_position_local_to_clip(model, vec4<f32>(vertex.position, 1.0));
     // Unpack the `u32` from the vertex buffer into the `vec4<f32>` used by the fragment shader
     out.color = vec4<f32>((vec4<u32>(vertex.color) >> vec4<u32>(0u, 8u, 16u, 24u)) & vec4<u32>(255u)) / 255.0;
+    out.dist = vertex.dist;
     return out;
 }
 
@@ -257,12 +299,16 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 struct FragmentInput {
     // The color is interpolated between vertices by default
     @location(0) color: vec4<f32>,
+    @location(1) dist: vec3<f32>,
 };
+const WIRE_COL: vec4<f32> = vec4(1.0, 0.0, 0.0, 1.0);
 
 /// Entry point for the fragment shader
 @fragment
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
-    return in.color;
+    let d = min(in.dist[0], min(in.dist[1], in.dist[2]));
+    let I = exp2(-2.0 * d * d);
+    return I * WIRE_COL + (1.0 - I) * in.color;
 }
 ";
 
