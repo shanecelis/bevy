@@ -72,9 +72,27 @@ fn tri_dist(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [[f32; 3]; 3] {
     let v1 = p2.xy() - p0.xy();
     let v2 = p1.xy() - p0.xy();
     let area = (v1.x * v2.y - v1.y * v2.x).abs();
-    let d0 = Vec3::X * area/v0.length();
-    let d1 = Vec3::Y * area/v1.length();
-    let d2 = Vec3::Z * area/v2.length();
+    let mut d0 = Vec3::X * area/v0.length();
+    let mut d1 = Vec3::Y * area/v1.length();
+    let mut d2 = Vec3::Z * area/v2.length();
+    if d0.length() < d1.length() {
+        if d0.length() < d2.length() {
+            // d0 is max
+            d0 *= 100.0;
+        } else {
+            // d2 is max
+            d2 *= 100.0;
+        }
+    } else {
+        if d1.length() < d2.length() {
+            // d1 is max
+            d1 *= 100.0;
+        } else {
+            // d2 is max
+            d2 *= 100.0;
+        }
+    }
+
     [d0.into(), d1.into(), d2.into()]
 }
 
