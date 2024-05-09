@@ -60,7 +60,6 @@ fn insert_dist(mesh: &mut Mesh) {
     let dists: Vec<_> = positions
         .chunks_exact(3)
         .flat_map(|p| tri_dist(p[0], p[1], p[2]))
-        // .flat_map(|normal| [normal; 3])
         .collect();
 
     mesh.insert_attribute(MeshVertexAttribute::new("Tri_Dist", 2, VertexFormat::Float32x3), dists);
@@ -75,20 +74,20 @@ fn tri_dist(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [[f32; 3]; 3] {
     let mut d0 = Vec3::X * area/v0.length();
     let mut d1 = Vec3::Y * area/v1.length();
     let mut d2 = Vec3::Z * area/v2.length();
-    if d0.length() < d1.length() {
-        if d0.length() < d2.length() {
-            // d0 is max
+    if v0.length() > v1.length() {
+        if v0.length() > v2.length() {
+            // v0 is max
             d0 *= 100.0;
         } else {
-            // d2 is max
+            // v2 is max
             d2 *= 100.0;
         }
     } else {
-        if d1.length() < d2.length() {
-            // d1 is max
+        if v1.length() > v2.length() {
+            // v1 is max
             d1 *= 100.0;
         } else {
-            // d2 is max
+            // v2 is max
             d2 *= 100.0;
         }
     }
