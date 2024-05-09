@@ -5,6 +5,7 @@ struct Vertex {
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
 
+    // InstanceData
     @location(3) i_pos_scale: vec4<f32>,
     @location(4) i_color: vec4<f32>,
 };
