@@ -22,7 +22,9 @@ use bevy::{
             MultisampleState, PipelineCache, PolygonMode, PrimitiveState, PrimitiveTopology,
             RenderPipelineDescriptor, SpecializedRenderPipeline, SpecializedRenderPipelines,
             TextureFormat, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
+            binding_types::storage_buffer, *
         },
+        renderer::{RenderDevice},
         texture::BevyDefault,
         view::{ExtractedView, ViewTarget, VisibleEntities},
         Extract, Render, RenderApp, RenderSet,
@@ -200,17 +202,20 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
         // Customize how to store the meshes' vertex attributes in the vertex buffer
         // Our meshes only have position and color
-        let formats = vec![
+        let formats = [
             // Position
             VertexFormat::Float32x3,
             // Color
             VertexFormat::Uint32,
             // Dist
-            VertexFormat::Float32x3,
+            // VertexFormat::Float32x3,
         ];
 
         let vertex_layout =
             VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, formats);
+        let mut dist_layout =
+            VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, [VertexFormat::Float32x3]);
+        dist_layout.attributes[0].shader_location = 2;
 
         let format = match key.contains(Mesh2dPipelineKey::HDR) {
             true => ViewTarget::TEXTURE_FORMAT_HDR,
@@ -224,7 +229,7 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
                 entry_point: "vertex".into(),
                 shader_defs: vec![],
                 // Use our custom vertex buffer
-                buffers: vec![vertex_layout],
+                buffers: vec![vertex_layout, dist_layout],
             },
             fragment: Some(FragmentState {
                 // Use our custom shader
@@ -462,5 +467,61 @@ pub fn queue_colored_mesh2d(
                 });
             }
         }
+    }
+}
+
+#[derive(Resource)]
+struct Buffers {
+    // The buffer that will be used by the compute shader
+    gpu_buffer: Buffer,
+    // The buffer that will be read on the cpu.
+    // The `gpu_buffer` will be copied to this buffer every frame
+    cpu_buffer: Buffer,
+}
+
+#[derive(Resource)]
+struct GpuBufferBindGroup(BindGroup);
+
+fn prepare_bind_group(
+    mut commands: Commands,
+    pipeline: Res<ComputePipeline>,
+    render_device: Res<RenderDevice>,
+    buffers: Res<Buffers>,
+) {
+    let bind_group = render_device.create_bind_group(
+        None,
+        &pipeline.layout,
+        &BindGroupEntries::single(buffers.gpu_buffer.as_entire_binding()),
+    );
+    commands.insert_resource(GpuBufferBindGroup(bind_group));
+}
+
+#[derive(Resource)]
+struct ComputePipeline {
+    layout: BindGroupLayout,
+    pipeline: CachedComputePipelineId,
+}
+
+impl FromWorld for ComputePipeline {
+    fn from_world(world: &mut World) -> Self {
+        let render_device = world.resource::<RenderDevice>();
+        let layout = render_device.create_bind_group_layout(
+            None,
+            &BindGroupLayoutEntries::single(
+                ShaderStages::COMPUTE,
+                storage_buffer::<Vec<u32>>(false),
+            ),
+        );
+        let shader = world.load_asset("shaders/gpu_readback.wgsl");
+        let pipeline_cache = world.resource::<PipelineCache>();
+        let pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("GPU readback compute shader".into()),
+            layout: vec![layout.clone()],
+            push_constant_ranges: Vec::new(),
+            shader: shader.clone(),
+            shader_defs: Vec::new(),
+            entry_point: "main".into(),
+        });
+        ComputePipeline { layout, pipeline }
     }
 }
