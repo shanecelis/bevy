@@ -40,12 +40,13 @@ use std::f32::consts::PI;
 
 fn main() {
     App::new()
+        .init_resource::<DistBuffer>()
         .add_plugins((DefaultPlugins, ColoredMesh2dPlugin))
         .add_systems(Startup, star)
         .run();
 }
 
-fn insert_dist(mesh: &mut Mesh) {
+fn calc_dist(mesh: &Mesh) -> Vec<[f32; 3]> {
     assert!(mesh.indices().is_none(), "`insert_dist` can't work on indexed geometry. Consider calling `Mesh::duplicate_vertices`.");
 
     assert!(
@@ -64,6 +65,11 @@ fn insert_dist(mesh: &mut Mesh) {
         .flat_map(|p| tri_dist(p[0], p[1], p[2]))
         .collect();
 
+    dists
+}
+
+fn insert_dist(mesh: &mut Mesh) {
+    let dists = calc_dist(mesh);
     mesh.insert_attribute(MeshVertexAttribute::new("Tri_Dist", 2, VertexFormat::Float32x3), dists);
 }
 
@@ -99,8 +105,10 @@ fn tri_dist(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [[f32; 3]; 3] {
 
 fn star(
     mut commands: Commands,
+    render_device: Res<RenderDevice>,
     // We will add a new Mesh for the star being created
     mut meshes: ResMut<Assets<Mesh>>,
+    mut dist_buffer: ResMut<DistBuffer>
 ) {
     // Let's define the mesh for the object we want to draw: a nice star.
     // We will specify here what kind of topology is used to define the mesh,
@@ -161,6 +169,13 @@ fn star(
     star.insert_indices(Indices::U32(indices));
     star.duplicate_vertices();
     insert_dist(&mut star);
+    let dist = calc_dist(&star);
+    dist_buffer.0 = Some(render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("dist_buffer"),
+            contents: bytemuck::cast_slice(dist.as_slice()),
+            usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
+        }));
+
 
     // We can now spawn the entities for the star and the camera
     commands.spawn((
@@ -208,7 +223,7 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
             // Color
             VertexFormat::Uint32,
             // Dist
-            // VertexFormat::Float32x3,
+            VertexFormat::Float32x3,
         ];
 
         let vertex_layout =
@@ -229,7 +244,9 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
                 entry_point: "vertex".into(),
                 shader_defs: vec![],
                 // Use our custom vertex buffer
-                buffers: vec![vertex_layout, dist_layout],
+                buffers: vec![vertex_layout,
+                              // dist_layout
+                ],
             },
             fragment: Some(FragmentState {
                 // Use our custom shader
@@ -270,6 +287,65 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
     }
 }
 
+use bevy::ecs::system::{lifetimeless::SRes, SystemParamItem};
+use bevy::sprite::RenderMesh2dInstances;
+use bevy::render::{
+    render_phase::{TrackedRenderPass, RenderCommand, RenderCommandResult},
+    mesh::GpuBufferInfo,
+};
+
+pub struct MyDrawMesh2d;
+impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::RenderCommand<P> for MyDrawMesh2d {
+    type Param = (SRes<RenderAssets<GpuMesh>>, SRes<RenderMesh2dInstances>, SRes<DistBuffer>);
+    type ViewQuery = ();
+    type ItemQuery = ();
+
+    #[inline]
+    fn render<'w>(
+        item: &P,
+        _view: (),
+        _item_query: Option<()>,
+        (meshes, render_mesh2d_instances, dist_buffer): SystemParamItem<'w, '_, Self::Param>,
+        pass: &mut TrackedRenderPass<'w>,
+    ) -> RenderCommandResult {
+        let meshes = meshes.into_inner();
+        let render_mesh2d_instances = render_mesh2d_instances.into_inner();
+        let dist_buffer = dist_buffer.into_inner();
+
+        let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
+            render_mesh2d_instances.get(&item.entity())
+        else {
+            return RenderCommandResult::Failure;
+        };
+        let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
+            return RenderCommandResult::Failure;
+        };
+
+        let Some(ref dist_buffer) = dist_buffer.0 else {
+            return RenderCommandResult::Failure;
+        };
+
+        pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+        pass.set_vertex_buffer(1, dist_buffer.slice(..));
+
+        let batch_range = item.batch_range();
+        match &gpu_mesh.buffer_info {
+            GpuBufferInfo::Indexed {
+                buffer,
+                index_format,
+                count,
+            } => {
+                pass.set_index_buffer(buffer.slice(..), 0, *index_format);
+                pass.draw_indexed(0..*count, 0, batch_range.clone());
+            }
+            GpuBufferInfo::NonIndexed => {
+                pass.draw(0..gpu_mesh.vertex_count, batch_range.clone());
+            }
+        }
+        RenderCommandResult::Success
+    }
+}
+
 // This specifies how to render a colored 2d mesh
 type DrawColoredMesh2d = (
     // Set the pipeline
@@ -279,6 +355,7 @@ type DrawColoredMesh2d = (
     // Set the mesh uniform as bind group 1
     SetMesh2dBindGroup<1>,
     // Draw the mesh
+    // MyDrawMesh2d,
     DrawMesh2d,
 );
 
@@ -469,6 +546,9 @@ pub fn queue_colored_mesh2d(
         }
     }
 }
+
+#[derive(Resource, Default)]
+pub struct DistBuffer(Option<Buffer>);
 
 #[derive(Resource)]
 struct Buffers {
