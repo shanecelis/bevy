@@ -30,7 +30,8 @@ impl<R: ExtractResource> Default for ExtractResourcePlugin<R> {
 }
 
 impl<R: ExtractResource> Plugin for ExtractResourcePlugin<R> {
-    fn build(&self, app: &mut App) {
+    fn build(&self, app: &mut App) { }
+    fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(ExtractSchedule, extract_resource::<R>);
         } else {

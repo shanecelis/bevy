@@ -11,6 +11,7 @@ use bevy::{
     math::FloatOrd,
     prelude::*,
     render::{
+        extract_resource::{ExtractResource, ExtractResourcePlugin},
         mesh::{GpuMesh, Indices, MeshVertexAttribute},
         render_asset::{RenderAssetUsages, RenderAssets},
         render_phase::{
@@ -36,12 +37,23 @@ use bevy::{
     },
     utils::EntityHashMap,
 };
+use bevy::ecs::system::{lifetimeless::SRes, SystemParamItem};
+use bevy::sprite::RenderMesh2dInstances;
+use bevy::render::{
+    render_phase::{TrackedRenderPass, RenderCommand, RenderCommandResult},
+    mesh::GpuBufferInfo,
+};
+
+use bevy::log::LogPlugin;
 use std::f32::consts::PI;
 
 fn main() {
     App::new()
+        .add_plugins(LogPlugin::default())
+        .add_plugins(ExtractResourcePlugin::<DistBuffer>::default())
+        .add_plugins((DefaultPlugins.build().disable::<LogPlugin>(), ColoredMesh2dPlugin))
         .init_resource::<DistBuffer>()
-        .add_plugins((DefaultPlugins, ColoredMesh2dPlugin))
+        // BUG: ExtractResourcePlugin must come after
         .add_systems(Startup, star)
         .run();
 }
@@ -82,23 +94,23 @@ fn tri_dist(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [[f32; 3]; 3] {
     let mut d0 = Vec3::X * area/v0.length();
     let mut d1 = Vec3::Y * area/v1.length();
     let mut d2 = Vec3::Z * area/v2.length();
-    if v0.length() > v1.length() {
-        if v0.length() > v2.length() {
-            // v0 is max
-            d0 *= 100.0;
-        } else {
-            // v2 is max
-            d2 *= 100.0;
-        }
-    } else {
-        if v1.length() > v2.length() {
-            // v1 is max
-            d1 *= 100.0;
-        } else {
-            // v2 is max
-            d2 *= 100.0;
-        }
-    }
+    // if v0.length() > v1.length() {
+    //     if v0.length() > v2.length() {
+    //         // v0 is max
+    //         d0 *= 100.0;
+    //     } else {
+    //         // v2 is max
+    //         d2 *= 100.0;
+    //     }
+    // } else {
+    //     if v1.length() > v2.length() {
+    //         // v1 is max
+    //         d1 *= 100.0;
+    //     } else {
+    //         // v2 is max
+    //         d2 *= 100.0;
+    //     }
+    // }
 
     [d0.into(), d1.into(), d2.into()]
 }
@@ -168,7 +180,7 @@ fn star(
     }
     star.insert_indices(Indices::U32(indices));
     star.duplicate_vertices();
-    insert_dist(&mut star);
+    // insert_dist(&mut star);
     let dist = calc_dist(&star);
     dist_buffer.0 = Some(render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("dist_buffer"),
@@ -223,7 +235,7 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
             // Color
             VertexFormat::Uint32,
             // Dist
-            VertexFormat::Float32x3,
+            // VertexFormat::Float32x3,
         ];
 
         let vertex_layout =
@@ -245,7 +257,7 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
                 shader_defs: vec![],
                 // Use our custom vertex buffer
                 buffers: vec![vertex_layout,
-                              // dist_layout
+                              dist_layout
                 ],
             },
             fragment: Some(FragmentState {
@@ -287,13 +299,6 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
     }
 }
 
-use bevy::ecs::system::{lifetimeless::SRes, SystemParamItem};
-use bevy::sprite::RenderMesh2dInstances;
-use bevy::render::{
-    render_phase::{TrackedRenderPass, RenderCommand, RenderCommandResult},
-    mesh::GpuBufferInfo,
-};
-
 pub struct MyDrawMesh2d;
 impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::RenderCommand<P> for MyDrawMesh2d {
     type Param = (SRes<RenderAssets<GpuMesh>>, SRes<RenderMesh2dInstances>, SRes<DistBuffer>);
@@ -310,7 +315,9 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
     ) -> RenderCommandResult {
         let meshes = meshes.into_inner();
         let render_mesh2d_instances = render_mesh2d_instances.into_inner();
+        // let dist_buffer = dist_buffer.map(|x| x.into_inner());
         let dist_buffer = dist_buffer.into_inner();
+        // dbg!(dist_buffer);
 
         let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
             render_mesh2d_instances.get(&item.entity())
@@ -320,12 +327,12 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
         let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
             return RenderCommandResult::Failure;
         };
-
         let Some(ref dist_buffer) = dist_buffer.0 else {
             return RenderCommandResult::Failure;
         };
 
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+        // pass.set_vertex_buffer(1, gpu_mesh.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, dist_buffer.slice(..));
 
         let batch_range = item.batch_range();
@@ -355,8 +362,8 @@ type DrawColoredMesh2d = (
     // Set the mesh uniform as bind group 1
     SetMesh2dBindGroup<1>,
     // Draw the mesh
-    // MyDrawMesh2d,
-    DrawMesh2d,
+    MyDrawMesh2d,
+    // DrawMesh2d,
 );
 
 // The custom shader can be inline like here, included from another file at build time
@@ -547,7 +554,7 @@ pub fn queue_colored_mesh2d(
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Debug, Clone, Resource, Default, ExtractResource, Deref, DerefMut)]
 pub struct DistBuffer(Option<Buffer>);
 
 #[derive(Resource)]

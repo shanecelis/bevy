@@ -1,0 +1,63 @@
+# Problem
+
+Perfectly good error logs are silently lost if `DefaultPlugins` or `LogPlugin` has not been added early enough.
+
+# Example
+
+I was mucking around with mesh2d_manual [for reasons](https://mastodon.gamedev.place/@shanecelis/112454741918455592) and I made this mistake: I put `ExtractResourcePlugin` ahead of `DefaultPlugins`.
+
+```rust
+fn main() {
+    App::new()
+        .init_resource::<DistBuffer>()
+        .add_plugins(ExtractResourcePlugin::<DistBuffer>::default())
+        // Error message that "Render app did not exist..." is never shown.
+        .add_plugins((DefaultPlugins, ColoredMesh2dPlugin))
+        .add_systems(Startup, star)
+        .run();
+}
+```
+
+I was befuddled by this because I could see the error message in the code and assumed I must not be hitting that execution path. I added some `eprintln!` and figured out it was the `LogPlugin` that needed to come first before the error was reported. To provoke the error again and log it, I added `LogPlugin` manually.
+
+```rust
+fn main() {
+    App::new()
+        .add_plugins(LogPlugin::default())
+        .add_plugins(ExtractResourcePlugin::<DistBuffer>::default())
+        .add_plugins((DefaultPlugins.build().disable::<LogPlugin>(), ColoredMesh2dPlugin))
+        .init_resource::<DistBuffer>()
+        .add_systems(Startup, star)
+        .run();
+}
+```
+
+This then showed me the right error message:
+
+```
+2024-05-17T05:12:34.125757Z ERROR bevy_render::extract_resource: Render app did not exist when trying to add `extract_resource` for <mesh2d_manual::DistBuffer>.
+```
+
+This is a great error message and would have set me straight if I had seen it.
+
+# Suggested Solutions
+
+## Fix in the small
+
+One could have `ExtractResourcePlugin` come before `DefaultPlugins` if it did its work in `finish()` rather than `build()`. I've seen a few plugins opt for this when dealing with the `RenderApp`. Maybe that should be done but I think that's avoiding a larger issue.
+
+## Accumulate Log Counts
+
+Perhaps errors emitted before `LogPlugin` ought to be accumulated somehow so they aren't silently lost until `LogPlugin` is added. Keeping an accounting of the missing log types would be helpful. Then when `LogPlugin` is added, it could emit this warning if there are missing log types that we care about:
+
+```
+2024-05-17T05:12:34.125757Z WARNING bevy_log::LogPlugin: Missed logs: 2 warn, 1 error; consider adding LogPlugin or DefaultPlugins to App earlier.
+```
+
+Maybe a `LogCountPlugin` could be devised that only collects those counts. 
+
+And if the `App` never adds `LogPlugin`, maybe those counts could be made available somewhere.
+
+# Conclusion
+
+I'm happy to submit a PR for either of these solutions if desired.
