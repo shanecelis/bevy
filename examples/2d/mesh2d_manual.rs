@@ -55,7 +55,6 @@ impl Plugin for WireframePlugin {
     fn build(&self, app: &mut App) {
         app
             .add_plugins(ExtractResourcePlugin::<DistBuffer>::default())
-            .init_resource::<DistBuffer>()
             ;
 
         let render_app = app.sub_app_mut(RenderApp);
@@ -145,7 +144,7 @@ fn star(
     render_device: Res<RenderDevice>,
     // We will add a new Mesh for the star being created
     mut meshes: ResMut<Assets<Mesh>>,
-    mut dist_buffer: ResMut<DistBuffer>
+    // mut dist_buffer: ResMut<DistBuffer>
 ) {
     // Let's define the mesh for the object we want to draw: a nice star.
     // We will specify here what kind of topology is used to define the mesh,
@@ -215,13 +214,14 @@ fn star(
     //         usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
     //     }));
 
-    // Don't initialize the buffer from the CPU. Try to calculate it on the gpu.
-    dist_buffer.0 = Some(render_device.create_buffer(&BufferDescriptor {
+    let dist_buffer = DistBuffer(render_device.create_buffer(&BufferDescriptor {
         label: Some("dist_buffer"),
         size: (dist.len() * 3 * 4) as u64,
         usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
         mapped_at_creation: false,
     }));
+    // Don't initialize the buffer from the CPU. Try to calculate it on the gpu.
+    commands.insert_resource(dist_buffer);
 
 
     // We can now spawn the entities for the star and the camera
@@ -336,7 +336,7 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
 
 pub struct MyDrawMesh2d;
 impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::RenderCommand<P> for MyDrawMesh2d {
-    type Param = (SRes<RenderAssets<GpuMesh>>, SRes<RenderMesh2dInstances>, SRes<DistBuffer>);
+    type Param = (SRes<RenderAssets<GpuMesh>>, SRes<RenderMesh2dInstances>, Option<SRes<DistBuffer>>);
     type ViewQuery = ();
     type ItemQuery = ();
 
@@ -351,6 +351,9 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
         let meshes = meshes.into_inner();
         let render_mesh2d_instances = render_mesh2d_instances.into_inner();
         // let dist_buffer = dist_buffer.map(|x| x.into_inner());
+        let Some(dist_buffer) = dist_buffer else {
+            return RenderCommandResult::Failure;
+        };
         let dist_buffer = dist_buffer.into_inner();
         // dbg!(dist_buffer);
 
@@ -360,9 +363,6 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
             return RenderCommandResult::Failure;
         };
         let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
-            return RenderCommandResult::Failure;
-        };
-        let Some(ref dist_buffer) = dist_buffer.0 else {
             return RenderCommandResult::Failure;
         };
 
@@ -592,8 +592,8 @@ pub fn queue_colored_mesh2d(
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 struct ScreenSpaceDistLabel;
 
-#[derive(Debug, Clone, Resource, Default, ExtractResource, Deref, DerefMut)]
-pub struct DistBuffer(Option<Buffer>);
+#[derive(Debug, Clone, Resource,  ExtractResource, Deref, DerefMut)]
+pub struct DistBuffer(Buffer);
 
 #[derive(Resource)]
 struct Buffers {
@@ -611,14 +611,14 @@ fn prepare_bind_group(
     mut commands: Commands,
     pipeline: Res<ComputePipeline>,
     render_device: Res<RenderDevice>,
-    dist_buffer: Res<DistBuffer>,
+    dist_buffer: Option<Res<DistBuffer>>,
     render_mesh2d_instances: Res<RenderMesh2dInstances>,
     meshes: Res<RenderAssets<GpuMesh>>,
     colored_mesh: Query<Entity, With<ColoredMesh2d>>,
 ) {
-    if dist_buffer.is_none() {
+    let Some(dist_buffer) = dist_buffer else {
         return;
-    }
+    };
     let entity = colored_mesh.single();
 
     let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
@@ -633,7 +633,7 @@ fn prepare_bind_group(
         None,
         &pipeline.layout,
         &BindGroupEntries::sequential((gpu_mesh.vertex_buffer.as_entire_buffer_binding(),
-                                       dist_buffer.0.as_ref().unwrap().as_entire_buffer_binding())),
+                                       dist_buffer.0.as_entire_buffer_binding())),
     );
     commands.insert_resource(GpuBufferBindGroup(bind_group));
 }
