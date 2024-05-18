@@ -54,23 +54,24 @@ impl Plugin for WireframePlugin {
 
     fn build(&self, app: &mut App) {
         app
-            .add_plugins(ExtractResourcePlugin::<DistBuffer>::default())
+            .add_plugins(ExtractResourcePlugin::<Buffers>::default())
+            .add_plugins(ExtractResourcePlugin::<GpuBufferBindGroup>::default())
             ;
 
         let render_app = app.sub_app_mut(RenderApp);
-        // render_app.add_systems(
-        //     Render,
-        //     prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
-        // );
+        render_app.add_systems(
+            Render,
+            prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
+        );
 
-        // let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        // render_graph.add_node(ScreenSpaceDistLabel, ScreenSpaceDistNode);
-        // render_graph.add_node_edge(ScreenSpaceDistLabel, bevy::render::graph::CameraDriverLabel);
+        let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
+        render_graph.add_node(ScreenSpaceDistLabel, ScreenSpaceDistNode);
+        render_graph.add_node_edge(ScreenSpaceDistLabel, bevy::render::graph::CameraDriverLabel);
     }
 
     fn finish(&self, app: &mut App) {
         let render_app = app.sub_app_mut(RenderApp);
-        // render_app.init_resource::<ComputePipeline>();
+        render_app.init_resource::<ComputePipeline>();
     }
 }
 
@@ -144,7 +145,7 @@ fn star(
     render_device: Res<RenderDevice>,
     // We will add a new Mesh for the star being created
     mut meshes: ResMut<Assets<Mesh>>,
-    // mut dist_buffer: ResMut<DistBuffer>
+    // mut dist_buffer: ResMut<Buffers>
 ) {
     // Let's define the mesh for the object we want to draw: a nice star.
     // We will specify here what kind of topology is used to define the mesh,
@@ -180,7 +181,7 @@ fn star(
         v_pos.push([r * a.sin(), r * a.cos(), 0.0]);
     }
     // Set the position attribute
-    star.insert_attribute(Mesh::ATTRIBUTE_POSITION, v_pos);
+    star.insert_attribute(Mesh::ATTRIBUTE_POSITION, v_pos.clone());
     // And a RGB color attribute as well
     let mut v_color: Vec<u32> = vec![LinearRgba::BLACK.as_u32()];
     v_color.extend_from_slice(&[LinearRgba::from(YELLOW).as_u32(); 10]);
@@ -208,20 +209,26 @@ fn star(
     info!("mesh attributes {:?}", star.attributes().collect::<Vec<_>>());
     // insert_dist(&mut star);
     let dist = calc_dist(&star);
-    // dist_buffer.0 = Some(render_device.create_buffer_with_data(&BufferInitDescriptor {
+    // let dist_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
     //         label: Some("dist_buffer"),
     //         contents: bytemuck::cast_slice(dist.as_slice()),
     //         usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
-    //     }));
+    //     });
 
-    let dist_buffer = DistBuffer(render_device.create_buffer(&BufferDescriptor {
+    let dist_buffer = render_device.create_buffer(&BufferDescriptor {
         label: Some("dist_buffer"),
-        size: (dist.len() * 3 * 4) as u64,
+        size: dbg!((dist.len() * 3 * 4) as u64),
         usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
         mapped_at_creation: false,
-    }));
+    });
+
+    let pos_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("pos_buffer"),
+            contents: bytemuck::cast_slice(v_pos.as_slice()),
+            usage: BufferUsages::STORAGE,
+        });
     // Don't initialize the buffer from the CPU. Try to calculate it on the gpu.
-    commands.insert_resource(dist_buffer);
+    commands.insert_resource(Buffers { dist_buffer, pos_buffer });
 
 
     // We can now spawn the entities for the star and the camera
@@ -336,7 +343,7 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
 
 pub struct MyDrawMesh2d;
 impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::RenderCommand<P> for MyDrawMesh2d {
-    type Param = (SRes<RenderAssets<GpuMesh>>, SRes<RenderMesh2dInstances>, Option<SRes<DistBuffer>>);
+    type Param = (SRes<RenderAssets<GpuMesh>>, SRes<RenderMesh2dInstances>, Option<SRes<Buffers>>);
     type ViewQuery = ();
     type ItemQuery = ();
 
@@ -345,17 +352,17 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
         item: &P,
         _view: (),
         _item_query: Option<()>,
-        (meshes, render_mesh2d_instances, dist_buffer): SystemParamItem<'w, '_, Self::Param>,
+        (meshes, render_mesh2d_instances, buffers): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let meshes = meshes.into_inner();
         let render_mesh2d_instances = render_mesh2d_instances.into_inner();
-        // let dist_buffer = dist_buffer.map(|x| x.into_inner());
-        let Some(dist_buffer) = dist_buffer else {
+        // let buffers = buffers.map(|x| x.into_inner());
+        let Some(buffers) = buffers else {
             return RenderCommandResult::Failure;
         };
-        let dist_buffer = dist_buffer.into_inner();
-        // dbg!(dist_buffer);
+        let buffers = buffers.into_inner();
+        // dbg!(buffers);
 
         let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
             render_mesh2d_instances.get(&item.entity())
@@ -368,7 +375,7 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
 
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
         // pass.set_vertex_buffer(1, gpu_mesh.vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, dist_buffer.slice(..));
+        pass.set_vertex_buffer(1, buffers.dist_buffer.slice(..));
 
         let batch_range = item.batch_range();
         match &gpu_mesh.buffer_info {
@@ -592,11 +599,8 @@ pub fn queue_colored_mesh2d(
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 struct ScreenSpaceDistLabel;
 
-#[derive(Debug, Clone, Resource,  ExtractResource, Deref, DerefMut)]
-pub struct DistBuffer(Buffer);
-
-#[derive(Resource)]
-struct Buffers {
+#[derive(Resource, ExtractResource, Clone)]
+pub struct Buffers {
     // The buffer that will be used by the compute shader
     pos_buffer: Buffer,
     // The buffer that will be read on the cpu.
@@ -604,36 +608,37 @@ struct Buffers {
     dist_buffer: Buffer,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Clone, ExtractResource)]
 struct GpuBufferBindGroup(BindGroup);
 
 fn prepare_bind_group(
     mut commands: Commands,
     pipeline: Res<ComputePipeline>,
     render_device: Res<RenderDevice>,
-    dist_buffer: Option<Res<DistBuffer>>,
+    buffers: Option<Res<Buffers>>,
     render_mesh2d_instances: Res<RenderMesh2dInstances>,
     meshes: Res<RenderAssets<GpuMesh>>,
     colored_mesh: Query<Entity, With<ColoredMesh2d>>,
 ) {
-    let Some(dist_buffer) = dist_buffer else {
+    let Some(buffers) = buffers else {
+        warn!("no buffers");
         return;
     };
-    let entity = colored_mesh.single();
+    // let entity = colored_mesh.single();
 
-    let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
-        render_mesh2d_instances.get(&entity)
-    else {
-        return;
-    };
-    let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
-        return;
-    };
+    // let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
+    //     render_mesh2d_instances.get(&entity)
+    // else {
+    //     return;
+    // };
+    // let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
+    //     return;
+    // };
     let bind_group = render_device.create_bind_group(
         None,
         &pipeline.layout,
-        &BindGroupEntries::sequential((gpu_mesh.vertex_buffer.as_entire_buffer_binding(),
-                                       dist_buffer.0.as_entire_buffer_binding())),
+        &BindGroupEntries::sequential((buffers.pos_buffer.as_entire_buffer_binding(),
+                                       buffers.dist_buffer.as_entire_binding())),
     );
     commands.insert_resource(GpuBufferBindGroup(bind_group));
 }
@@ -656,10 +661,10 @@ impl FromWorld for ComputePipeline {
                  )
             ),
         );
-        let shader = world.load_asset("shaders/gpu_readback.wgsl");
+        let shader = world.load_asset("shaders/screenspace_dist.wgsl");
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
-            label: Some("GPU readback compute shader".into()),
+            label: Some("Wireframe compute shader".into()),
             layout: vec![layout.clone()],
             push_constant_ranges: Vec::new(),
             shader: shader.clone(),
@@ -680,9 +685,6 @@ impl render_graph::Node for ScreenSpaceDistNode {
         world: &World,
     ) -> Result<(), render_graph::NodeRunError> {
 
-        const DISPLAY_FACTOR: u32 = 4;
-        const SIZE: (u32, u32) = (1280 / DISPLAY_FACTOR, 720 / DISPLAY_FACTOR);
-        const WORKGROUP_SIZE: u32 = 8;
         let bind_groups = &world.resource::<GpuBufferBindGroup>().0;
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<ComputePipeline>();
@@ -696,7 +698,7 @@ impl render_graph::Node for ScreenSpaceDistNode {
             .unwrap();
         pass.set_bind_group(0, &bind_groups, &[]);
         pass.set_pipeline(update_pipeline);
-        pass.dispatch_workgroups(SIZE.0 / WORKGROUP_SIZE, SIZE.1 / WORKGROUP_SIZE, 1);
+        pass.dispatch_workgroups(1, 1, 1);
 
         Ok(())
     }
