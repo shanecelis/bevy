@@ -11,6 +11,7 @@ use bevy::{
     math::FloatOrd,
     prelude::*,
     render::{
+        render_graph::{self, RenderGraph, RenderLabel},
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         mesh::{GpuMesh, Indices, MeshVertexAttribute},
         render_asset::{RenderAssetUsages, RenderAssets},
@@ -23,9 +24,9 @@ use bevy::{
             MultisampleState, PipelineCache, PolygonMode, PrimitiveState, PrimitiveTopology,
             RenderPipelineDescriptor, SpecializedRenderPipeline, SpecializedRenderPipelines,
             TextureFormat, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
-            binding_types::storage_buffer, *
+            binding_types::{storage_buffer, storage_buffer_read_only}, *
         },
-        renderer::{RenderDevice},
+        renderer::{RenderDevice, RenderContext},
         texture::BevyDefault,
         view::{ExtractedView, ViewTarget, VisibleEntities},
         Extract, Render, RenderApp, RenderSet,
@@ -47,13 +48,37 @@ use bevy::render::{
 use bevy::log::LogPlugin;
 use std::f32::consts::PI;
 
+struct WireframePlugin;
+
+impl Plugin for WireframePlugin {
+
+    fn build(&self, app: &mut App) {
+        app
+            .add_plugins(ExtractResourcePlugin::<DistBuffer>::default())
+            .init_resource::<DistBuffer>()
+            ;
+
+        let render_app = app.sub_app_mut(RenderApp);
+        // render_app.add_systems(
+        //     Render,
+        //     prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
+        // );
+
+        // let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
+        // render_graph.add_node(ScreenSpaceDistLabel, ScreenSpaceDistNode);
+        // render_graph.add_node_edge(ScreenSpaceDistLabel, bevy::render::graph::CameraDriverLabel);
+    }
+
+    fn finish(&self, app: &mut App) {
+        let render_app = app.sub_app_mut(RenderApp);
+        // render_app.init_resource::<ComputePipeline>();
+    }
+}
+
 fn main() {
     App::new()
         .add_plugins(LogPlugin::default())
-        .add_plugins(ExtractResourcePlugin::<DistBuffer>::default())
-        .add_plugins((DefaultPlugins.build().disable::<LogPlugin>(), ColoredMesh2dPlugin))
-        .init_resource::<DistBuffer>()
-        // BUG: ExtractResourcePlugin must come after
+        .add_plugins((DefaultPlugins.build().disable::<LogPlugin>(), ColoredMesh2dPlugin, WireframePlugin))
         .add_systems(Startup, star)
         .run();
 }
@@ -180,13 +205,23 @@ fn star(
     }
     star.insert_indices(Indices::U32(indices));
     star.duplicate_vertices();
+
+    info!("mesh attributes {:?}", star.attributes().collect::<Vec<_>>());
     // insert_dist(&mut star);
     let dist = calc_dist(&star);
-    dist_buffer.0 = Some(render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("dist_buffer"),
-            contents: bytemuck::cast_slice(dist.as_slice()),
-            usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
-        }));
+    // dist_buffer.0 = Some(render_device.create_buffer_with_data(&BufferInitDescriptor {
+    //         label: Some("dist_buffer"),
+    //         contents: bytemuck::cast_slice(dist.as_slice()),
+    //         usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
+    //     }));
+
+    // Don't initialize the buffer from the CPU. Try to calculate it on the gpu.
+    dist_buffer.0 = Some(render_device.create_buffer(&BufferDescriptor {
+        label: Some("dist_buffer"),
+        size: (dist.len() * 3 * 4) as u64,
+        usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
+        mapped_at_creation: false,
+    }));
 
 
     // We can now spawn the entities for the star and the camera
@@ -554,16 +589,19 @@ pub fn queue_colored_mesh2d(
     }
 }
 
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+struct ScreenSpaceDistLabel;
+
 #[derive(Debug, Clone, Resource, Default, ExtractResource, Deref, DerefMut)]
 pub struct DistBuffer(Option<Buffer>);
 
 #[derive(Resource)]
 struct Buffers {
     // The buffer that will be used by the compute shader
-    gpu_buffer: Buffer,
+    pos_buffer: Buffer,
     // The buffer that will be read on the cpu.
     // The `gpu_buffer` will be copied to this buffer every frame
-    cpu_buffer: Buffer,
+    dist_buffer: Buffer,
 }
 
 #[derive(Resource)]
@@ -573,12 +611,29 @@ fn prepare_bind_group(
     mut commands: Commands,
     pipeline: Res<ComputePipeline>,
     render_device: Res<RenderDevice>,
-    buffers: Res<Buffers>,
+    dist_buffer: Res<DistBuffer>,
+    render_mesh2d_instances: Res<RenderMesh2dInstances>,
+    meshes: Res<RenderAssets<GpuMesh>>,
+    colored_mesh: Query<Entity, With<ColoredMesh2d>>,
 ) {
+    if dist_buffer.is_none() {
+        return;
+    }
+    let entity = colored_mesh.single();
+
+    let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
+        render_mesh2d_instances.get(&entity)
+    else {
+        return;
+    };
+    let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
+        return;
+    };
     let bind_group = render_device.create_bind_group(
         None,
         &pipeline.layout,
-        &BindGroupEntries::single(buffers.gpu_buffer.as_entire_binding()),
+        &BindGroupEntries::sequential((gpu_mesh.vertex_buffer.as_entire_buffer_binding(),
+                                       dist_buffer.0.as_ref().unwrap().as_entire_buffer_binding())),
     );
     commands.insert_resource(GpuBufferBindGroup(bind_group));
 }
@@ -593,10 +648,12 @@ impl FromWorld for ComputePipeline {
     fn from_world(world: &mut World) -> Self {
         let render_device = world.resource::<RenderDevice>();
         let layout = render_device.create_bind_group_layout(
-            None,
-            &BindGroupLayoutEntries::single(
+            "ScreenSpaceDist",
+            &BindGroupLayoutEntries::sequential(
                 ShaderStages::COMPUTE,
-                storage_buffer::<Vec<u32>>(false),
+                (storage_buffer_read_only::<Vec<f32>>(false),
+                 storage_buffer::<Vec<f32>>(false),
+                 )
             ),
         );
         let shader = world.load_asset("shaders/gpu_readback.wgsl");
@@ -610,5 +667,37 @@ impl FromWorld for ComputePipeline {
             entry_point: "main".into(),
         });
         ComputePipeline { layout, pipeline }
+    }
+}
+
+struct ScreenSpaceDistNode;
+
+impl render_graph::Node for ScreenSpaceDistNode {
+    fn run(
+        &self,
+        _graph: &mut render_graph::RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), render_graph::NodeRunError> {
+
+        const DISPLAY_FACTOR: u32 = 4;
+        const SIZE: (u32, u32) = (1280 / DISPLAY_FACTOR, 720 / DISPLAY_FACTOR);
+        const WORKGROUP_SIZE: u32 = 8;
+        let bind_groups = &world.resource::<GpuBufferBindGroup>().0;
+        let pipeline_cache = world.resource::<PipelineCache>();
+        let pipeline = world.resource::<ComputePipeline>();
+
+        let mut pass = render_context
+            .command_encoder()
+            .begin_compute_pass(&ComputePassDescriptor::default());
+
+        let update_pipeline = pipeline_cache
+            .get_compute_pipeline(pipeline.pipeline)
+            .unwrap();
+        pass.set_bind_group(0, &bind_groups, &[]);
+        pass.set_pipeline(update_pipeline);
+        pass.dispatch_workgroups(SIZE.0 / WORKGROUP_SIZE, SIZE.1 / WORKGROUP_SIZE, 1);
+
+        Ok(())
     }
 }
