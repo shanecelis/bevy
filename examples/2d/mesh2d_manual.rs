@@ -13,7 +13,7 @@ use bevy::{
     render::{
         render_graph::{self, RenderGraph, RenderLabel},
         extract_resource::{ExtractResource, ExtractResourcePlugin},
-        mesh::{GpuMesh, Indices, MeshVertexAttribute},
+        mesh::{GpuMesh, Indices, MeshVertexAttribute, VertexAttributeValues},
         render_asset::{RenderAssetUsages, RenderAssets},
         render_phase::{
             AddRenderCommand, DrawFunctions, PhaseItemExtraIndex, SetItemPipeline,
@@ -81,6 +81,10 @@ fn main() {
         .add_plugins((DefaultPlugins.build().disable::<LogPlugin>(), ColoredMesh2dPlugin, WireframePlugin))
         .add_systems(Startup, star)
         .run();
+}
+
+fn pad(v: [f32; 3]) -> [f32; 4] {
+    [v[0], v[1], v[2], 0.0]
 }
 
 fn calc_dist(mesh: &Mesh) -> Vec<[f32; 3]> {
@@ -188,7 +192,7 @@ fn star(
         v_pos.push([r * a.sin(), r * a.cos(), 0.0]);
     }
     // Set the position attribute
-    star.insert_attribute(Mesh::ATTRIBUTE_POSITION, v_pos.clone());
+    star.insert_attribute(Mesh::ATTRIBUTE_POSITION, v_pos);
     // And a RGB color attribute as well
     let mut v_color: Vec<u32> = vec![LinearRgba::BLACK.as_u32()];
     v_color.extend_from_slice(&[LinearRgba::from(YELLOW).as_u32(); 10]);
@@ -212,10 +216,15 @@ fn star(
     }
     star.insert_indices(Indices::U32(indices));
     star.duplicate_vertices();
+    let Some(VertexAttributeValues::Float32x3(positions)) = star.attribute(Mesh::ATTRIBUTE_POSITION) else {
+        panic!("blah");
+    };
+    let v_pos_4: Vec<[f32; 4]> = positions.into_iter().map(|x| pad(*x)).collect();
 
-    info!("mesh attributes {:?}", star.attributes().collect::<Vec<_>>());
+    // info!("mesh attributes {:?}", star.attributes().collect::<Vec<_>>());
+    info!("mesh vertex count {}", star.count_vertices());
     // insert_dist(&mut star);
-    let dist = calc_dist(&star);
+    let dist: Vec<[f32; 4]> = calc_dist(&star).into_iter().map(pad).collect();
     // let dist_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
     //         label: Some("dist_buffer"),
     //         contents: bytemuck::cast_slice(dist.as_slice()),
@@ -224,14 +233,14 @@ fn star(
 
     let dist_buffer = render_device.create_buffer(&BufferDescriptor {
         label: Some("dist_buffer"),
-        size: dbg!((dist.len() * 3 * 4) as u64),
+        size: dbg!((dist.len() * 4 * 4) as u64),
         usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
         mapped_at_creation: false,
     });
 
     let pos_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("pos_buffer"),
-            contents: bytemuck::cast_slice(v_pos.as_slice()),
+            contents: bytemuck::cast_slice(v_pos_4.as_slice()),
             usage: BufferUsages::STORAGE,
         });
     // Don't initialize the buffer from the CPU. Try to calculate it on the gpu.
@@ -290,7 +299,7 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
         let vertex_layout =
             VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, formats);
         let mut dist_layout =
-            VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, [VertexFormat::Float32x3]);
+            VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, [VertexFormat::Float32x4]);
         dist_layout.attributes[0].shader_location = 2;
 
         let format = match key.contains(Mesh2dPipelineKey::HDR) {
@@ -426,7 +435,7 @@ struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
     @location(1) color: u32,
-    @location(2) dist: vec3<f32>,
+    @location(2) dist: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -434,7 +443,7 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     // We pass the vertex color to the fragment shader in location 0
     @location(0) color: vec4<f32>,
-    @location(1) dist: vec3<f32>,
+    @location(1) dist: vec4<f32>,
 };
 
 /// Entry point for the vertex shader
@@ -454,7 +463,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 struct FragmentInput {
     // The color is interpolated between vertices by default
     @location(0) color: vec4<f32>,
-    @location(1) dist: vec3<f32>,
+    @location(1) dist: vec4<f32>,
 };
 const WIRE_COL: vec4<f32> = vec4(1.0, 0.0, 0.0, 1.0);
 
@@ -706,7 +715,7 @@ impl render_graph::Node for ScreenSpaceDistNode {
             .unwrap();
         pass.set_bind_group(0, &bind_groups, &[]);
         pass.set_pipeline(update_pipeline);
-        pass.dispatch_workgroups(1, 1, 1);
+        pass.dispatch_workgroups(9, 1, 1);
 
         Ok(())
     }
