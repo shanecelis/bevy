@@ -110,6 +110,13 @@ fn insert_dist(mesh: &mut Mesh) {
     mesh.insert_attribute(MeshVertexAttribute::new("Tri_Dist", 2, VertexFormat::Float32x3), dists);
 }
 
+// #[derive(Clone, Copy, Pod, Zeroable)]
+// #[repr(C)]
+// struct PosData {
+//     position: Vec3,
+//     padding: f32,
+// }
+
 fn tri_dist(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [[f32; 3]; 3] {
     let (p0, p1, p2) = (Vec3::from(a), Vec3::from(b), Vec3::from(c));
     let v0 = p2.xy() - p1.xy();
@@ -638,7 +645,8 @@ fn prepare_bind_group(
         None,
         &pipeline.layout,
         &BindGroupEntries::sequential((buffers.pos_buffer.as_entire_buffer_binding(),
-                                       buffers.dist_buffer.as_entire_binding())),
+                                       buffers.dist_buffer.as_entire_buffer_binding(),
+        )),
     );
     commands.insert_resource(GpuBufferBindGroup(bind_group));
 }
@@ -656,8 +664,8 @@ impl FromWorld for ComputePipeline {
             "ScreenSpaceDist",
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::COMPUTE,
-                (storage_buffer_read_only::<Vec<f32>>(false),
-                 storage_buffer::<Vec<f32>>(false),
+                (storage_buffer_read_only::<Vec<Vec4>>(false),
+                 storage_buffer::<Vec<Vec4>>(false),
                  )
             ),
         );

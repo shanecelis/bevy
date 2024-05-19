@@ -14,7 +14,8 @@ struct OutputData {
 // }
 
 // Buffers
-@group(0) @binding(0) var<storage, read> vertexInput: array<VertexData>;
+@group(0) @binding(0) var<storage> vertexInput: array<VertexData>;
+// @group(0) @binding(1) var<storage, read_write> vertexInput2: array<VertexData>;
 @group(0) @binding(1) var<storage, read_write> outputBuffer: array<OutputData>;
 // @group(0) @binding(2) var<uniform> winScale: WinScale;
 
