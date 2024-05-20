@@ -47,6 +47,7 @@ use bevy::render::{
 
 use bevy::log::LogPlugin;
 use std::f32::consts::PI;
+use std::collections::HashMap;
 
 struct WireframePlugin;
 
@@ -59,10 +60,19 @@ impl Plugin for WireframePlugin {
             ;
 
         let render_app = app.sub_app_mut(RenderApp);
-        render_app.add_systems(
-            Render,
-            prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
-        );
+        render_app
+            .init_resource::<BufferMap>()
+            .add_systems(Render,
+                         prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
+            )
+            .add_systems(Render,
+                         prepare_wireframe_mesh2d//.in_set(RenderSet::PrepareBindGroups),
+            );
+            // .add_systems(
+            //     ExtractSchedule,
+            //     // prepare_wireframe_mesh2d.after(extract_colored_mesh2d),
+            //     prepare_wireframe_mesh2d
+            // );
 
         let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
         render_graph.add_node(ScreenSpaceDistLabel, ScreenSpaceDistNode);
@@ -217,7 +227,7 @@ fn star(
     star.insert_indices(Indices::U32(indices));
     star.duplicate_vertices();
     let Some(VertexAttributeValues::Float32x3(positions)) = star.attribute(Mesh::ATTRIBUTE_POSITION) else {
-        panic!("blah");
+        panic!("no position vertices");
     };
     let v_pos_4: Vec<[f32; 4]> = positions.into_iter().map(|x| pad(*x)).collect();
 
@@ -356,6 +366,14 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
             label: Some("colored_mesh2d_pipeline".into()),
         }
     }
+}
+
+pub struct WireframeMesh2dInstance {
+    pub render_mesh: RenderMesh2dInstance,
+    // pub transforms: Mesh2dTransforms,
+    // pub mesh_asset_id: AssetId<Mesh>,
+    // pub material_bind_group_id: Material2dBindGroupId,
+    // pub automatic_batching: bool,
 }
 
 pub struct MyDrawMesh2d;
@@ -518,6 +536,79 @@ impl Plugin for ColoredMesh2dPlugin {
     }
 }
 
+#[derive(Component)]
+struct Wireframe;
+
+/// Extract the [`ColoredMesh2d`] marker component into the render app
+pub fn prepare_wireframe_mesh2d(
+    // FIXME: Can't reference assets in RenderApp maybe?
+    // meshes: Assets<Mesh>,
+    mut buffer_map: ResMut<BufferMap>,
+    render_device: Res<RenderDevice>,
+    // When extracting, you must use `Extract` to mark the `SystemParam`s
+    // which should be taken from the main world.
+    query:
+        Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle), With<Wireframe>>,
+) {
+    for (entity, view_visibility, transform, handle) in &query {
+        if !view_visibility.get() {
+            continue;
+        }
+
+        let transforms = Mesh2dTransforms {
+            transform: (&transform.affine()).into(),
+            flags: MeshFlags::empty().bits(),
+        };
+        let asset_id = handle.0.id();
+
+        if !buffer_map.pos_buffers.contains_key(&asset_id) {
+            info!("Create position buffer");
+            // let mesh = Mesh::new();
+
+            // let Some(mesh) = meshes.get(asset_id) else {
+            //     warn!("No mesh");
+            //     continue;
+            // };
+
+            // let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+            //     panic!("no position vertices");
+            // };
+            // let v_pos_4: Vec<[f32; 4]> = positions.into_iter().map(|x| pad(*x)).collect();
+
+            // let vertex_count = mesh.count_vertices();
+
+            // let pos_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            //     label: Some("pos_buffer"),
+            //     contents: bytemuck::cast_slice(v_pos_4.as_slice()),
+            //     usage: BufferUsages::STORAGE,
+            // });
+            // buffer_map.pos_buffers.insert(asset_id, pos_buffer);
+        }
+
+
+        if !buffer_map.dist_buffers.contains_key(&entity) {
+            info!("Create dist buffer");
+
+            // let mesh = Mesh::new();
+            // let Some(mesh) = meshes.get(asset_id) else {
+            //     warn!("No mesh dist");
+            //     continue;
+            // };
+            // let vertex_count = mesh.count_vertices();
+
+            // let dist_buffer = render_device.create_buffer(&BufferDescriptor {
+            //     label: Some("dist_buffer"),
+            //     size: dbg!((vertex_count * 4 * 4) as u64),
+            //     usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
+            //     mapped_at_creation: false,
+            // });
+
+            // buffer_map.dist_buffers.insert(entity, (vertex_count, dist_buffer));
+        }
+
+    }
+}
+
 /// Extract the [`ColoredMesh2d`] marker component into the render app
 pub fn extract_colored_mesh2d(
     mut commands: Commands,
@@ -616,12 +707,17 @@ pub fn queue_colored_mesh2d(
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 struct ScreenSpaceDistLabel;
 
+#[derive(Resource, ExtractResource, Clone, Default)]
+pub struct BufferMap {
+    pos_buffers: HashMap<AssetId<Mesh>, Buffer>,
+    dist_buffers: bevy::ecs::entity::EntityHashMap<(usize, Buffer)>,
+}
+
 #[derive(Resource, ExtractResource, Clone)]
 pub struct Buffers {
-    // The buffer that will be used by the compute shader
+    // The vertex position buffer, indexed on Mesh Id.
     pos_buffer: Buffer,
-    // The buffer that will be read on the cpu.
-    // The `gpu_buffer` will be copied to this buffer every frame
+    // The distance buffer, indexed on instance, requires transform too.
     dist_buffer: Buffer,
     vertex_count: usize,
 }
