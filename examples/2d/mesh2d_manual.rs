@@ -55,7 +55,7 @@ impl Plugin for WireframePlugin {
     fn build(&self, app: &mut App) {
         app
             .add_plugins(ExtractResourcePlugin::<Buffers>::default())
-            .add_plugins(ExtractResourcePlugin::<GpuBufferBindGroup>::default())
+            .add_plugins(ExtractResourcePlugin::<WireframeBinding>::default())
             ;
 
         let render_app = app.sub_app_mut(RenderApp);
@@ -221,8 +221,9 @@ fn star(
     };
     let v_pos_4: Vec<[f32; 4]> = positions.into_iter().map(|x| pad(*x)).collect();
 
+    let vertex_count = star.count_vertices();
     // info!("mesh attributes {:?}", star.attributes().collect::<Vec<_>>());
-    info!("mesh vertex count {}", star.count_vertices());
+    info!("mesh vertex count {}", vertex_count);
     // insert_dist(&mut star);
     let dist: Vec<[f32; 4]> = calc_dist(&star).into_iter().map(pad).collect();
     // let dist_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
@@ -244,7 +245,7 @@ fn star(
             usage: BufferUsages::STORAGE,
         });
     // Don't initialize the buffer from the CPU. Try to calculate it on the gpu.
-    commands.insert_resource(Buffers { dist_buffer, pos_buffer });
+    commands.insert_resource(Buffers { dist_buffer, pos_buffer, vertex_count });
 
 
     // We can now spawn the entities for the star and the camera
@@ -622,10 +623,14 @@ pub struct Buffers {
     // The buffer that will be read on the cpu.
     // The `gpu_buffer` will be copied to this buffer every frame
     dist_buffer: Buffer,
+    vertex_count: usize,
 }
 
 #[derive(Resource, Clone, ExtractResource)]
-struct GpuBufferBindGroup(BindGroup);
+struct WireframeBinding {
+    bind_group: BindGroup,
+    vertex_count: usize
+}
 
 fn prepare_bind_group(
     mut commands: Commands,
@@ -657,7 +662,8 @@ fn prepare_bind_group(
                                        buffers.dist_buffer.as_entire_buffer_binding(),
         )),
     );
-    commands.insert_resource(GpuBufferBindGroup(bind_group));
+    let vertex_count = buffers.vertex_count;
+    commands.insert_resource(WireframeBinding { bind_group, vertex_count });
 }
 
 #[derive(Resource)]
@@ -702,7 +708,8 @@ impl render_graph::Node for ScreenSpaceDistNode {
         world: &World,
     ) -> Result<(), render_graph::NodeRunError> {
 
-        let bind_groups = &world.resource::<GpuBufferBindGroup>().0;
+        let wireframe_binding = world.resource::<WireframeBinding>();
+        let bind_group = &wireframe_binding.bind_group;
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<ComputePipeline>();
 
@@ -713,9 +720,9 @@ impl render_graph::Node for ScreenSpaceDistNode {
         let update_pipeline = pipeline_cache
             .get_compute_pipeline(pipeline.pipeline)
             .unwrap();
-        pass.set_bind_group(0, &bind_groups, &[]);
+        pass.set_bind_group(0, &bind_group, &[]);
         pass.set_pipeline(update_pipeline);
-        pass.dispatch_workgroups(9, 1, 1);
+        pass.dispatch_workgroups((wireframe_binding.vertex_count / 3) as u32, 1, 1);
 
         Ok(())
     }
