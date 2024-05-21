@@ -14,7 +14,7 @@ use bevy::{
         render_graph::{self, RenderGraph, RenderLabel},
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         mesh::{GpuMesh, Indices, MeshVertexAttribute, VertexAttributeValues},
-        render_asset::{RenderAssetUsages, RenderAssets},
+        render_asset::{RenderAssetUsages, RenderAssets, PrepareAssetError},
         render_phase::{
             AddRenderCommand, DrawFunctions, PhaseItemExtraIndex, SetItemPipeline,
             SortedRenderPhase,
@@ -27,7 +27,8 @@ use bevy::{
             binding_types::{storage_buffer, storage_buffer_read_only}, *
         },
         renderer::{RenderDevice, RenderContext},
-        texture::BevyDefault,
+        render_asset::{RenderAsset, RenderAssetPlugin},
+        texture::{BevyDefault, GpuImage},
         view::{ExtractedView, ViewTarget, VisibleEntities},
         Extract, Render, RenderApp, RenderSet,
     },
@@ -38,7 +39,7 @@ use bevy::{
     },
     utils::EntityHashMap,
 };
-use bevy::ecs::system::{lifetimeless::SRes, SystemParamItem};
+use bevy::ecs::system::{lifetimeless::{SRes, SResMut}, SystemParamItem};
 use bevy::sprite::RenderMesh2dInstances;
 use bevy::render::{
     render_phase::{TrackedRenderPass, RenderCommand, RenderCommandResult},
@@ -57,6 +58,7 @@ impl Plugin for WireframePlugin {
         app
             .add_plugins(ExtractResourcePlugin::<Buffers>::default())
             .add_plugins(ExtractResourcePlugin::<WireframeBinding>::default())
+            .add_plugins(RenderAssetPlugin::<PosBuffer, GpuImage>::default())
             ;
 
         let render_app = app.sub_app_mut(RenderApp);
@@ -65,14 +67,15 @@ impl Plugin for WireframePlugin {
             .add_systems(Render,
                          prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
             )
-            .add_systems(Render,
-                         prepare_wireframe_mesh2d//.in_set(RenderSet::PrepareBindGroups),
-            );
+            // .add_systems(Render,
+            //              prepare_wireframe_mesh2d//.in_set(RenderSet::PrepareBindGroups),
+            // );
             // .add_systems(
             //     ExtractSchedule,
             //     // prepare_wireframe_mesh2d.after(extract_colored_mesh2d),
             //     prepare_wireframe_mesh2d
-            // );
+            // )
+            ;
 
         let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
         render_graph.add_node(ScreenSpaceDistLabel, ScreenSpaceDistNode);
@@ -542,13 +545,13 @@ struct Wireframe;
 /// Extract the [`ColoredMesh2d`] marker component into the render app
 pub fn prepare_wireframe_mesh2d(
     // FIXME: Can't reference assets in RenderApp maybe?
-    // meshes: Assets<Mesh>,
+    pos_buffers: Res<RenderAssets<PosBuffer>>,
     mut buffer_map: ResMut<BufferMap>,
     render_device: Res<RenderDevice>,
     // When extracting, you must use `Extract` to mark the `SystemParam`s
     // which should be taken from the main world.
     query:
-        Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle), With<Wireframe>>,
+        Extract<Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle), With<Wireframe>>>,
 ) {
     for (entity, view_visibility, transform, handle) in &query {
         if !view_visibility.get() {
@@ -760,6 +763,56 @@ fn prepare_bind_group(
     );
     let vertex_count = buffers.vertex_count;
     commands.insert_resource(WireframeBinding { bind_group, vertex_count });
+}
+
+struct PosBuffer {
+    buffer: Buffer,
+    vertex_count: usize,
+}
+
+impl RenderAsset for PosBuffer {
+    type SourceAsset = Mesh;
+    type Param = (
+        SRes<RenderDevice>,
+    );
+
+    #[inline]
+    fn asset_usage(mesh: &Self::SourceAsset) -> RenderAssetUsages {
+        mesh.asset_usage
+    }
+
+    fn byte_len(mesh: &Self::SourceAsset) -> Option<usize> {
+        Some(mesh.count_vertices() * 4 * 4)
+    }
+
+    /// Converts the extracted mesh a into [`GpuMesh`].
+    fn prepare_asset(
+        mesh: Self::SourceAsset,
+        (render_device, ): &mut SystemParamItem<
+            Self::Param,
+        >,
+    ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
+
+        let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+            // warn!("no position vertices");
+            return Err(PrepareAssetError::RetryNextUpdate(mesh));
+        };
+        let v_pos_4: Vec<[f32; 4]> = positions.into_iter().map(|x| pad(*x)).collect();
+
+        let vertex_count = mesh.count_vertices();
+
+        let pos_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("pos_buffer"),
+            contents: bytemuck::cast_slice(v_pos_4.as_slice()),
+            usage: BufferUsages::STORAGE,
+        });
+
+        Ok(PosBuffer {
+            vertex_count,
+            buffer: pos_buffer
+        })
+
+    }
 }
 
 #[derive(Resource)]
