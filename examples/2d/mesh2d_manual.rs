@@ -7,11 +7,11 @@
 
 use bevy::{
     color::palettes::basic::YELLOW,
-    core_pipeline::core_2d::Transparent2d,
+    core_pipeline::core_2d::{self, Transparent2d},
     math::FloatOrd,
     prelude::*,
     render::{
-        render_graph::{self, RenderGraph, RenderLabel},
+        render_graph::{self, RenderGraph, RenderLabel, RenderGraphApp,},
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         mesh::{GpuMesh, Indices, MeshVertexAttribute, VertexAttributeValues},
         render_asset::{RenderAssetUsages, RenderAssets, PrepareAssetError},
@@ -39,7 +39,7 @@ use bevy::{
     },
     utils::EntityHashMap,
 };
-use bevy::ecs::system::{lifetimeless::{SRes, SResMut}, SystemParamItem};
+use bevy::ecs::{query::QueryItem, system::{lifetimeless::{SRes, SResMut}, SystemParamItem}};
 use bevy::sprite::RenderMesh2dInstances;
 use bevy::render::{
     render_phase::{TrackedRenderPass, RenderCommand, RenderCommandResult},
@@ -56,17 +56,38 @@ impl Plugin for WireframePlugin {
 
     fn build(&self, app: &mut App) {
         app
+
             .add_plugins(ExtractResourcePlugin::<Buffers>::default())
-            .add_plugins(ExtractResourcePlugin::<WireframeBinding>::default())
+            // .add_plugins(ExtractResourcePlugin::<WireframeBinding>::default())
             .add_plugins(RenderAssetPlugin::<PosBuffer, GpuImage>::default())
             ;
 
         let render_app = app.sub_app_mut(RenderApp);
         render_app
+            .init_resource::<WireframeMesh2dInstances>()
             .init_resource::<BufferMap>()
             .add_systems(Render,
                          prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
             )
+            .add_render_graph_node::<render_graph::ViewNodeRunner<ScreenSpaceDistNode>>(
+                // Specify the label of the graph, in this case we want the graph for 3d
+                core_2d::graph::Core2d,
+                // It also needs the label of the node
+                ScreenSpaceDistLabel,
+            )
+            .add_render_graph_edges(
+                core_2d::graph::Core2d,
+                // Specify the node ordering.
+                // This will automatically create all required node edges to enforce the given ordering.
+                (
+                    core_2d::graph::Node2d::StartMainPass,
+                    core_2d::graph::Node2d::EndMainPass,
+                    ScreenSpaceDistLabel,
+
+                    // core_2d::graph::Node2d::StartMainPass,
+                    // bevy::render::graph::CameraDriverLabel
+                ),
+            );
             // .add_systems(Render,
             //              prepare_wireframe_mesh2d//.in_set(RenderSet::PrepareBindGroups),
             // );
@@ -77,9 +98,9 @@ impl Plugin for WireframePlugin {
             // )
             ;
 
-        let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        render_graph.add_node(ScreenSpaceDistLabel, ScreenSpaceDistNode);
-        render_graph.add_node_edge(ScreenSpaceDistLabel, bevy::render::graph::CameraDriverLabel);
+        // let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
+        // render_graph.add_node(ScreenSpaceDistLabel, node);
+        // render_graph.add_node_edge(
     }
 
     fn finish(&self, app: &mut App) {
@@ -180,7 +201,9 @@ fn star(
     // order to save on memory once it has been uploaded to the GPU.
     let mut star = Mesh::new(
         PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD,
+        // FIXME: Main world is required in order to allow PosBuffer to process
+        // the mesh too.
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
     );
 
     // Vertices need to have a position attribute. We will use the following
@@ -247,7 +270,7 @@ fn star(
 
     let dist_buffer = render_device.create_buffer(&BufferDescriptor {
         label: Some("dist_buffer"),
-        size: dbg!((dist.len() * 4 * 4) as u64),
+        size: (dist.len() * 4 * 4) as u64,
         usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
         mapped_at_creation: false,
     });
@@ -260,15 +283,26 @@ fn star(
     // Don't initialize the buffer from the CPU. Try to calculate it on the gpu.
     commands.insert_resource(Buffers { dist_buffer, pos_buffer, vertex_count });
 
-
+// The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
+    let handle = Mesh2dHandle(meshes.add(star));
     // We can now spawn the entities for the star and the camera
     commands.spawn((
         // We use a marker component to identify the custom colored meshes
         ColoredMesh2d,
-        // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
-        Mesh2dHandle(meshes.add(star)),
+        Wireframe,
+        handle.clone(),
         // This bundle's components are needed for something to be rendered
         SpatialBundle::INHERITED_IDENTITY,
+    ));
+
+    commands.spawn((
+        // We use a marker component to identify the custom colored meshes
+        ColoredMesh2d,
+        Wireframe,
+        // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
+        handle,
+        // This bundle's components are needed for something to be rendered
+        SpatialBundle::from_transform(Transform::from_xyz(300.0, 100.0, 1.0)),
     ));
 
     // Spawn the camera
@@ -372,16 +406,12 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
 }
 
 pub struct WireframeMesh2dInstance {
-    pub render_mesh: RenderMesh2dInstance,
-    // pub transforms: Mesh2dTransforms,
-    // pub mesh_asset_id: AssetId<Mesh>,
-    // pub material_bind_group_id: Material2dBindGroupId,
-    // pub automatic_batching: bool,
+    pub dist_buffer: Buffer,
 }
 
 pub struct MyDrawMesh2d;
 impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::RenderCommand<P> for MyDrawMesh2d {
-    type Param = (SRes<RenderAssets<GpuMesh>>, SRes<RenderMesh2dInstances>, Option<SRes<Buffers>>);
+    type Param = (SRes<RenderAssets<GpuMesh>>, SRes<RenderMesh2dInstances>, SRes<WireframeMesh2dInstances>);
     type ViewQuery = ();
     type ItemQuery = ();
 
@@ -390,17 +420,12 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
         item: &P,
         _view: (),
         _item_query: Option<()>,
-        (meshes, render_mesh2d_instances, buffers): SystemParamItem<'w, '_, Self::Param>,
+        (meshes, render_mesh2d_instances, wireframe_mesh2d_instances): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let meshes = meshes.into_inner();
         let render_mesh2d_instances = render_mesh2d_instances.into_inner();
-        // let buffers = buffers.map(|x| x.into_inner());
-        let Some(buffers) = buffers else {
-            return RenderCommandResult::Failure;
-        };
-        let buffers = buffers.into_inner();
-        // dbg!(buffers);
+        let wireframe_mesh2d_instances = wireframe_mesh2d_instances.into_inner();
 
         let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
             render_mesh2d_instances.get(&item.entity())
@@ -411,9 +436,15 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
             return RenderCommandResult::Failure;
         };
 
+        let Some(WireframeMesh2dInstance { dist_buffer, .. }) =
+            wireframe_mesh2d_instances.get(&item.entity())
+        else {
+            return RenderCommandResult::Failure;
+        };
+
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
         // pass.set_vertex_buffer(1, gpu_mesh.vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, buffers.dist_buffer.slice(..));
+        pass.set_vertex_buffer(1, dist_buffer.slice(..));
 
         let batch_range = item.batch_range();
         match &gpu_mesh.buffer_info {
@@ -508,6 +539,9 @@ pub const COLORED_MESH2D_SHADER_HANDLE: Handle<Shader> =
 /// Our custom pipeline needs its own instance storage
 #[derive(Resource, Deref, DerefMut, Default)]
 pub struct RenderColoredMesh2dInstances(EntityHashMap<Entity, RenderMesh2dInstance>);
+
+#[derive(Resource, Deref, DerefMut, Default)]
+pub struct WireframeMesh2dInstances(EntityHashMap<Entity, WireframeMesh2dInstance>);
 
 impl Plugin for ColoredMesh2dPlugin {
     fn build(&self, app: &mut App) {
@@ -622,6 +656,9 @@ pub fn extract_colored_mesh2d(
         Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle), With<ColoredMesh2d>>,
     >,
     mut render_mesh_instances: ResMut<RenderColoredMesh2dInstances>,
+    mut wireframe_mesh_instances: ResMut<WireframeMesh2dInstances>,
+    render_device: Res<RenderDevice>,
+    meshes: Res<RenderAssets<GpuMesh>>,
 ) {
     let mut values = Vec::with_capacity(*previous_len);
     for (entity, view_visibility, transform, handle) in &query {
@@ -635,15 +672,34 @@ pub fn extract_colored_mesh2d(
         };
 
         values.push((entity, ColoredMesh2d));
+
+        let mesh_asset_id = handle.0.id();
         render_mesh_instances.insert(
             entity,
             RenderMesh2dInstance {
-                mesh_asset_id: handle.0.id(),
+                mesh_asset_id: mesh_asset_id,
                 transforms,
                 material_bind_group_id: Material2dBindGroupId::default(),
                 automatic_batching: false,
             },
         );
+        // let Some(gpu_mesh) = meshes.get(mesh_asset_id) else {
+        //     warn!("no gpu mesh");
+        //     continue;
+        // };
+        if ! wireframe_mesh_instances.contains_key(&entity) {
+            let vertex_count = 30;
+            wireframe_mesh_instances.insert(entity,
+                                            WireframeMesh2dInstance {
+                                                dist_buffer:
+                                                render_device.create_buffer(&BufferDescriptor {
+                                                    label: Some("dist_buffer"),
+                                                    size: (vertex_count * 4 * 4) as u64,
+                                                    usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
+                                                    mapped_at_creation: false,
+                                                })
+                                            });
+        }
     }
     *previous_len = values.len();
     commands.insert_or_spawn_batch(values);
@@ -725,7 +781,7 @@ pub struct Buffers {
     vertex_count: usize,
 }
 
-#[derive(Resource, Clone, ExtractResource)]
+#[derive(Component)]
 struct WireframeBinding {
     bind_group: BindGroup,
     vertex_count: usize
@@ -737,32 +793,40 @@ fn prepare_bind_group(
     render_device: Res<RenderDevice>,
     buffers: Option<Res<Buffers>>,
     render_mesh2d_instances: Res<RenderMesh2dInstances>,
-    meshes: Res<RenderAssets<GpuMesh>>,
+    pos_buffers: Res<RenderAssets<PosBuffer>>,
     colored_mesh: Query<Entity, With<ColoredMesh2d>>,
+    wireframe_mesh_instances: Res<WireframeMesh2dInstances>,
 ) {
-    let Some(buffers) = buffers else {
-        warn!("no buffers");
-        return;
-    };
-    // let entity = colored_mesh.single();
+    for entity in colored_mesh.iter() {
 
-    // let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
-    //     render_mesh2d_instances.get(&entity)
-    // else {
-    //     return;
-    // };
-    // let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
-    //     return;
-    // };
-    let bind_group = render_device.create_bind_group(
-        None,
-        &pipeline.layout,
-        &BindGroupEntries::sequential((buffers.pos_buffer.as_entire_buffer_binding(),
-                                       buffers.dist_buffer.as_entire_buffer_binding(),
-        )),
-    );
-    let vertex_count = buffers.vertex_count;
-    commands.insert_resource(WireframeBinding { bind_group, vertex_count });
+        let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
+            render_mesh2d_instances.get(&entity)
+        else {
+            return;
+        };
+
+        let Some(WireframeMesh2dInstance { dist_buffer, .. }) =
+            wireframe_mesh_instances.get(&entity)
+        else {
+            warn!("no wireframe mesh 2d");
+            return;
+        };
+        let Some(pos_buffer) = pos_buffers.get(*mesh_asset_id) else {
+            warn!("no pos buffer");
+            return;
+        };
+        let bind_group = render_device.create_bind_group(
+            None,
+            &pipeline.layout,
+            &BindGroupEntries::sequential((
+                pos_buffer.buffer.as_entire_buffer_binding(),
+                dist_buffer.as_entire_buffer_binding(),
+            )),
+        );
+        let vertex_count = pos_buffer.vertex_count;
+        // info!("wireframe binding inserted");
+        commands.entity(entity).insert(WireframeBinding { bind_group, vertex_count });
+    }
 }
 
 struct PosBuffer {
@@ -794,7 +858,7 @@ impl RenderAsset for PosBuffer {
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
 
         let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
-            // warn!("no position vertices");
+            warn!("no position vertices");
             return Err(PrepareAssetError::RetryNextUpdate(mesh));
         };
         let v_pos_4: Vec<[f32; 4]> = positions.into_iter().map(|x| pad(*x)).collect();
@@ -847,17 +911,28 @@ impl FromWorld for ComputePipeline {
     }
 }
 
+#[derive(Default)]
 struct ScreenSpaceDistNode;
 
-impl render_graph::Node for ScreenSpaceDistNode {
-    fn run(
+impl render_graph::ViewNode for ScreenSpaceDistNode {
+
+    type ViewQuery = (
+        &'static WireframeBinding,
+        // &'static SortedRenderPhase<Transparent3d>,
+        // &'static ViewTarget,
+        // &'static ViewDepthTexture,
+    );
+
+    fn run<'w>(
         &self,
-        _graph: &mut render_graph::RenderGraphContext,
-        render_context: &mut RenderContext,
-        world: &World,
+        graph: &mut render_graph::RenderGraphContext,
+        render_context: &mut RenderContext<'w>,
+        (
+            wireframe_binding,
+        ): QueryItem<'w, Self::ViewQuery>,
+        world: &'w World,
     ) -> Result<(), render_graph::NodeRunError> {
 
-        let wireframe_binding = world.resource::<WireframeBinding>();
         let bind_group = &wireframe_binding.bind_group;
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<ComputePipeline>();
@@ -872,6 +947,7 @@ impl render_graph::Node for ScreenSpaceDistNode {
         pass.set_bind_group(0, &bind_group, &[]);
         pass.set_pipeline(update_pipeline);
         pass.dispatch_workgroups((wireframe_binding.vertex_count / 3) as u32, 1, 1);
+        info!("ran compute shader");
 
         Ok(())
     }
