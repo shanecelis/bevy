@@ -278,7 +278,7 @@ fn star(
     commands.spawn((
         // We use a marker component to identify the custom colored meshes
         ColoredMesh2d,
-        Wireframe,
+        // Wireframe,
         // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
         handle,
         // This bundle's components are needed for something to be rendered
@@ -633,7 +633,7 @@ pub fn extract_colored_mesh2d(
     // When extracting, you must use `Extract` to mark the `SystemParam`s
     // which should be taken from the main world.
     query: Extract<
-        Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle), With<ColoredMesh2d>>,
+        Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle, Option<&Wireframe>), With<ColoredMesh2d>>,
     >,
     mut render_mesh_instances: ResMut<RenderColoredMesh2dInstances>,
     mut wireframe_mesh_instances: ResMut<WireframeMesh2dInstances>,
@@ -641,7 +641,7 @@ pub fn extract_colored_mesh2d(
     meshes: Res<RenderAssets<GpuMesh>>,
 ) {
     let mut values = Vec::with_capacity(*previous_len);
-    for (entity, view_visibility, transform, handle) in &query {
+    for (entity, view_visibility, transform, handle, wireframe) in &query {
         if !view_visibility.get() {
             continue;
         }
@@ -667,7 +667,7 @@ pub fn extract_colored_mesh2d(
         //     warn!("no gpu mesh");
         //     continue;
         // };
-        if ! wireframe_mesh_instances.contains_key(&entity) {
+        if wireframe.is_some() && ! wireframe_mesh_instances.contains_key(&entity) {
             let vertex_count = 30;
             wireframe_mesh_instances.insert(entity,
                                             WireframeMesh2dInstance {
@@ -788,7 +788,7 @@ fn prepare_bind_group(
         let Some(WireframeMesh2dInstance { dist_buffer, .. }) =
             wireframe_mesh_instances.get(&entity)
         else {
-            warn!("no wireframe mesh 2d");
+            // warn!("no wireframe mesh 2d");
             return;
         };
         let Some(pos_buffer) = pos_buffers.get(*mesh_asset_id) else {
