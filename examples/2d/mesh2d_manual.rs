@@ -7,11 +7,11 @@
 
 use bevy::{
     color::palettes::basic::YELLOW,
-    core_pipeline::core_2d::{self, Transparent2d},
+    core_pipeline::core_2d::Transparent2d,
     math::FloatOrd,
     prelude::*,
     render::{
-        render_graph::{self, RenderGraph, RenderLabel, RenderGraphApp,},
+        render_graph::{self, RenderGraph, RenderLabel},
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         mesh::{GpuMesh, Indices, MeshVertexAttribute, VertexAttributeValues},
         render_asset::{RenderAssetUsages, RenderAssets, PrepareAssetError},
@@ -39,7 +39,7 @@ use bevy::{
     },
     utils::EntityHashMap,
 };
-use bevy::ecs::{query::QueryItem, system::{lifetimeless::{SRes, SResMut}, SystemParamItem}};
+use bevy::ecs::system::{lifetimeless::{SRes, SResMut}, SystemParamItem};
 use bevy::sprite::RenderMesh2dInstances;
 use bevy::render::{
     render_phase::{TrackedRenderPass, RenderCommand, RenderCommandResult},
@@ -56,38 +56,18 @@ impl Plugin for WireframePlugin {
 
     fn build(&self, app: &mut App) {
         app
-
             .add_plugins(ExtractResourcePlugin::<Buffers>::default())
             // .add_plugins(ExtractResourcePlugin::<WireframeBinding>::default())
             .add_plugins(RenderAssetPlugin::<PosBuffer, GpuImage>::default())
             ;
 
         let render_app = app.sub_app_mut(RenderApp);
+        let node = ScreenSpaceDistNode::from_world(render_app.world_mut());
         render_app
             .init_resource::<WireframeMesh2dInstances>()
-            .init_resource::<BufferMap>()
             .add_systems(Render,
                          prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
             )
-            .add_render_graph_node::<render_graph::ViewNodeRunner<ScreenSpaceDistNode>>(
-                // Specify the label of the graph, in this case we want the graph for 3d
-                core_2d::graph::Core2d,
-                // It also needs the label of the node
-                ScreenSpaceDistLabel,
-            )
-            .add_render_graph_edges(
-                core_2d::graph::Core2d,
-                // Specify the node ordering.
-                // This will automatically create all required node edges to enforce the given ordering.
-                (
-                    core_2d::graph::Node2d::StartMainPass,
-                    core_2d::graph::Node2d::EndMainPass,
-                    ScreenSpaceDistLabel,
-
-                    // core_2d::graph::Node2d::StartMainPass,
-                    // bevy::render::graph::CameraDriverLabel
-                ),
-            );
             // .add_systems(Render,
             //              prepare_wireframe_mesh2d//.in_set(RenderSet::PrepareBindGroups),
             // );
@@ -98,9 +78,9 @@ impl Plugin for WireframePlugin {
             // )
             ;
 
-        // let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        // render_graph.add_node(ScreenSpaceDistLabel, node);
-        // render_graph.add_node_edge(
+        let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
+        render_graph.add_node(ScreenSpaceDistLabel, node);
+        render_graph.add_node_edge(ScreenSpaceDistLabel, bevy::render::graph::CameraDriverLabel);
     }
 
     fn finish(&self, app: &mut App) {
@@ -911,28 +891,33 @@ impl FromWorld for ComputePipeline {
     }
 }
 
-#[derive(Default)]
-struct ScreenSpaceDistNode;
-
-impl render_graph::ViewNode for ScreenSpaceDistNode {
-
-    type ViewQuery = (
+struct ScreenSpaceDistNode {
+    query: QueryState<
         &'static WireframeBinding,
-        // &'static SortedRenderPhase<Transparent3d>,
-        // &'static ViewTarget,
-        // &'static ViewDepthTexture,
-    );
+    >,
+}
 
-    fn run<'w>(
+impl FromWorld for ScreenSpaceDistNode {
+    fn from_world(world: &mut World) -> Self {
+        Self {
+            query: QueryState::new(world),
+        }
+    }
+}
+
+impl render_graph::Node for ScreenSpaceDistNode {
+    fn update(&mut self, world: &mut World) {
+        self.query.update_archetypes(world);
+    }
+
+    fn run(
         &self,
-        graph: &mut render_graph::RenderGraphContext,
-        render_context: &mut RenderContext<'w>,
-        (
-            wireframe_binding,
-        ): QueryItem<'w, Self::ViewQuery>,
-        world: &'w World,
+        _graph: &mut render_graph::RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
     ) -> Result<(), render_graph::NodeRunError> {
 
+        for wireframe_binding in self.query.iter_manual(world) {
         let bind_group = &wireframe_binding.bind_group;
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<ComputePipeline>();
@@ -947,7 +932,7 @@ impl render_graph::ViewNode for ScreenSpaceDistNode {
         pass.set_bind_group(0, &bind_group, &[]);
         pass.set_pipeline(update_pipeline);
         pass.dispatch_workgroups((wireframe_binding.vertex_count / 3) as u32, 1, 1);
-        info!("ran compute shader");
+        }
 
         Ok(())
     }
