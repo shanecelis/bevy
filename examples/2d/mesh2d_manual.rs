@@ -81,7 +81,7 @@ impl Plugin for WireframePlugin {
 fn main() {
     App::new()
         .add_plugins(LogPlugin::default())
-        .add_plugins((DefaultPlugins.build().disable::<LogPlugin>(), ColoredMesh2dPlugin, WireframePlugin))
+        .add_plugins((DefaultPlugins.build().disable::<LogPlugin>(), WireframeMesh2dPlugin, WireframePlugin))
         .add_systems(Startup, star)
         .run();
 }
@@ -221,21 +221,6 @@ fn star(
     }
     star.insert_indices(Indices::U32(indices));
     star.duplicate_vertices();
-    let Some(VertexAttributeValues::Float32x3(positions)) = star.attribute(Mesh::ATTRIBUTE_POSITION) else {
-        panic!("no position vertices");
-    };
-    let v_pos_4: Vec<[f32; 4]> = positions.into_iter().map(|x| pad(*x)).collect();
-
-    let vertex_count = star.count_vertices();
-    // info!("mesh attributes {:?}", star.attributes().collect::<Vec<_>>());
-    info!("mesh vertex count {}", vertex_count);
-    // insert_dist(&mut star);
-    let dist: Vec<[f32; 4]> = calc_dist(&star).into_iter().map(pad).collect();
-    // let dist_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-    //         label: Some("dist_buffer"),
-    //         contents: bytemuck::cast_slice(dist.as_slice()),
-    //         usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
-    //     });
 
 // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
     let handle = Mesh2dHandle(meshes.add(star));
@@ -354,12 +339,13 @@ impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
 }
 
 pub struct WireframeMesh2dInstance {
+    pub render_instance: RenderMesh2dInstance,
     pub dist_buffer: Buffer,
 }
 
 pub struct WireframeDrawMesh2d;
 impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::RenderCommand<P> for WireframeDrawMesh2d {
-    type Param = (SRes<RenderAssets<GpuMesh>>, SRes<RenderMesh2dInstances>, SRes<WireframeMesh2dInstances>);
+    type Param = (SRes<RenderAssets<GpuMesh>>, SRes<WireframeMesh2dInstances>);
     type ViewQuery = ();
     type ItemQuery = ();
 
@@ -368,15 +354,19 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
         item: &P,
         _view: (),
         _item_query: Option<()>,
-        (meshes, render_mesh2d_instances, wireframe_mesh2d_instances): SystemParamItem<'w, '_, Self::Param>,
+        (meshes, wireframe_mesh2d_instances): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let meshes = meshes.into_inner();
-        let render_mesh2d_instances = render_mesh2d_instances.into_inner();
         let wireframe_mesh2d_instances = wireframe_mesh2d_instances.into_inner();
 
-        let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
-            render_mesh2d_instances.get(&item.entity())
+        // let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
+        //     render_mesh2d_instances.get(&item.entity())
+        // else {
+        //     return RenderCommandResult::Failure;
+        // };
+        let Some(WireframeMesh2dInstance { render_instance: RenderMesh2dInstance { mesh_asset_id, .. }, dist_buffer, .. }) =
+            wireframe_mesh2d_instances.get(&item.entity())
         else {
             return RenderCommandResult::Failure;
         };
@@ -384,11 +374,6 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
             return RenderCommandResult::Failure;
         };
 
-        let Some(WireframeMesh2dInstance { dist_buffer, .. }) =
-            wireframe_mesh2d_instances.get(&item.entity())
-        else {
-            return RenderCommandResult::Failure;
-        };
 
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
         // pass.set_vertex_buffer(1, gpu_mesh.vertex_buffer.slice(..));
@@ -413,7 +398,7 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
 }
 
 // This specifies how to render a colored 2d mesh
-type DrawColoredMesh2d = (
+type DrawWireframeMesh2d = (
     // Set the pipeline
     SetItemPipeline,
     // Set the view uniform as bind group 0
@@ -476,7 +461,7 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
 ";
 
 /// Plugin that renders [`WireframeMesh2d`]s
-pub struct ColoredMesh2dPlugin;
+pub struct WireframeMesh2dPlugin;
 
 /// Handle to the custom shader with a unique random ID
 pub const WIREFRAME_MESH2D_SHADER_HANDLE: Handle<Shader> =
@@ -484,12 +469,9 @@ pub const WIREFRAME_MESH2D_SHADER_HANDLE: Handle<Shader> =
 
 /// Our custom pipeline needs its own instance storage
 #[derive(Resource, Deref, DerefMut, Default)]
-pub struct RenderColoredMesh2dInstances(EntityHashMap<Entity, RenderMesh2dInstance>);
-
-#[derive(Resource, Deref, DerefMut, Default)]
 pub struct WireframeMesh2dInstances(EntityHashMap<Entity, WireframeMesh2dInstance>);
 
-impl Plugin for ColoredMesh2dPlugin {
+impl Plugin for WireframeMesh2dPlugin {
     fn build(&self, app: &mut App) {
         // Load our custom shader
         let mut shaders = app.world_mut().resource_mut::<Assets<Shader>>();
@@ -501,14 +483,14 @@ impl Plugin for ColoredMesh2dPlugin {
         // Register our custom draw function, and add our render systems
         app.get_sub_app_mut(RenderApp)
             .unwrap()
-            .add_render_command::<Transparent2d, DrawColoredMesh2d>()
+            .add_render_command::<Transparent2d, DrawWireframeMesh2d>()
             .init_resource::<SpecializedRenderPipelines<WireframeMesh2dPipeline>>()
-            .init_resource::<RenderColoredMesh2dInstances>()
+            .init_resource::<WireframeMesh2dInstances>()
             .add_systems(
                 ExtractSchedule,
                 extract_colored_mesh2d.after(extract_mesh2d),
             )
-            .add_systems(Render, queue_colored_mesh2d.in_set(RenderSet::QueueMeshes));
+            .add_systems(Render, queue_wireframe_mesh2d.in_set(RenderSet::QueueMeshes));
     }
 
     fn finish(&self, app: &mut App) {
@@ -531,7 +513,6 @@ pub fn extract_colored_mesh2d(
     query: Extract<
         Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle), With<WireframeMesh2d>>,
     >,
-    mut render_mesh_instances: ResMut<RenderColoredMesh2dInstances>,
     mut wireframe_mesh_instances: ResMut<WireframeMesh2dInstances>,
     render_device: Res<RenderDevice>,
     meshes: Res<RenderAssets<GpuMesh>>,
@@ -550,25 +531,19 @@ pub fn extract_colored_mesh2d(
         values.push((entity, WireframeMesh2d));
 
         let mesh_asset_id = handle.0.id();
-        if ! render_mesh_instances.contains_key(&entity) {
-        render_mesh_instances.insert(
-            entity,
+        if ! wireframe_mesh_instances.contains_key(&entity) {
+
+            let vertex_count = 30;
+            wireframe_mesh_instances.insert(entity,
+                                            WireframeMesh2dInstance {
+                                                render_instance:
+
             RenderMesh2dInstance {
                 mesh_asset_id: mesh_asset_id,
                 transforms,
                 material_bind_group_id: Material2dBindGroupId::default(),
                 automatic_batching: false,
             },
-        );
-        }
-        // let Some(gpu_mesh) = meshes.get(mesh_asset_id) else {
-        //     warn!("no gpu mesh");
-        //     continue;
-        // };
-        if ! wireframe_mesh_instances.contains_key(&entity) {
-            let vertex_count = 30;
-            wireframe_mesh_instances.insert(entity,
-                                            WireframeMesh2dInstance {
                                                 dist_buffer:
                                                 render_device.create_buffer(&BufferDescriptor {
                                                     label: Some("dist_buffer"),
@@ -585,33 +560,34 @@ pub fn extract_colored_mesh2d(
 
 /// Queue the 2d meshes marked with [`WireframeMesh2d`] using our custom pipeline and draw function
 #[allow(clippy::too_many_arguments)]
-pub fn queue_colored_mesh2d(
+pub fn queue_wireframe_mesh2d(
     transparent_draw_functions: Res<DrawFunctions<Transparent2d>>,
     colored_mesh2d_pipeline: Res<WireframeMesh2dPipeline>,
     mut pipelines: ResMut<SpecializedRenderPipelines<WireframeMesh2dPipeline>>,
     pipeline_cache: Res<PipelineCache>,
     msaa: Res<Msaa>,
     render_meshes: Res<RenderAssets<GpuMesh>>,
-    render_mesh_instances: Res<RenderColoredMesh2dInstances>,
+    wireframe_mesh_instances: Res<WireframeMesh2dInstances>,
     mut views: Query<(
         &VisibleEntities,
         &mut SortedRenderPhase<Transparent2d>,
         &ExtractedView,
     )>,
 ) {
-    if render_mesh_instances.is_empty() {
+    if wireframe_mesh_instances.is_empty() {
         return;
     }
     // Iterate each view (a camera is a view)
     for (visible_entities, mut transparent_phase, view) in &mut views {
-        let draw_colored_mesh2d = transparent_draw_functions.read().id::<DrawColoredMesh2d>();
+        let draw_colored_mesh2d = transparent_draw_functions.read().id::<DrawWireframeMesh2d>();
 
         let mesh_key = Mesh2dPipelineKey::from_msaa_samples(msaa.samples())
             | Mesh2dPipelineKey::from_hdr(view.hdr);
 
         // Queue all entities visible to that view
         for visible_entity in visible_entities.iter::<WithMesh2d>() {
-            if let Some(mesh_instance) = render_mesh_instances.get(visible_entity) {
+            if let Some(wireframe_instance) = wireframe_mesh_instances.get(visible_entity) {
+                let mesh_instance = &wireframe_instance.render_instance;
                 let mesh2d_handle = mesh_instance.mesh_asset_id;
                 let mesh2d_transforms = &mesh_instance.transforms;
                 // Get our specialized pipeline
