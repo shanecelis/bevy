@@ -40,7 +40,6 @@ use bevy::{
     utils::EntityHashMap,
 };
 use bevy::ecs::system::{lifetimeless::{SRes, SResMut}, SystemParamItem};
-use bevy::sprite::RenderMesh2dInstances;
 use bevy::render::{
     render_phase::{TrackedRenderPass, RenderCommand, RenderCommandResult},
     mesh::GpuBufferInfo,
@@ -50,108 +49,16 @@ use bevy::log::LogPlugin;
 use std::f32::consts::PI;
 use std::collections::HashMap;
 
-struct WireframePlugin;
-
-impl Plugin for WireframePlugin {
-
-    fn build(&self, app: &mut App) {
-        app
-            .add_plugins(RenderAssetPlugin::<PosBuffer, GpuImage>::default())
-            ;
-
-        let render_app = app.sub_app_mut(RenderApp);
-        let node = ScreenspaceDistNode::from_world(render_app.world_mut());
-        render_app
-            .init_resource::<WireframeMesh2dInstances>()
-            .add_systems(Render,
-                         prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
-            );
-
-        let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        render_graph.add_node(ScreenSpaceDistLabel, node);
-        render_graph.add_node_edge(ScreenSpaceDistLabel, bevy::render::graph::CameraDriverLabel);
-    }
-
-    fn finish(&self, app: &mut App) {
-        let render_app = app.sub_app_mut(RenderApp);
-        render_app.init_resource::<ScreenspaceDistPipeline>();
-    }
-}
-
 fn main() {
     App::new()
         .add_plugins(LogPlugin::default())
-        .add_plugins((DefaultPlugins.build().disable::<LogPlugin>(), WireframeMesh2dPlugin, WireframePlugin))
+        .add_plugins((DefaultPlugins.build().disable::<LogPlugin>(), WireframeMesh2dPlugin))
         .add_systems(Startup, star)
         .run();
 }
 
 fn pad(v: [f32; 3]) -> [f32; 4] {
     [v[0], v[1], v[2], 0.0]
-}
-
-fn calc_dist(mesh: &Mesh) -> Vec<[f32; 3]> {
-    assert!(mesh.indices().is_none(), "`insert_dist` can't work on indexed geometry. Consider calling `Mesh::duplicate_vertices`.");
-
-    assert!(
-        matches!(mesh.primitive_topology(), PrimitiveTopology::TriangleList),
-        "`insert_dist` can only work on `TriangleList`s"
-    );
-
-    let positions = mesh
-        .attribute(Mesh::ATTRIBUTE_POSITION)
-        .unwrap()
-        .as_float3()
-        .expect("`Mesh::ATTRIBUTE_POSITION` vertex attributes should be of type `float3`");
-
-    let dists: Vec<_> = positions
-        .chunks_exact(3)
-        .flat_map(|p| tri_dist(p[0], p[1], p[2]))
-        .collect();
-
-    dists
-}
-
-fn insert_dist(mesh: &mut Mesh) {
-    let dists = calc_dist(mesh);
-    mesh.insert_attribute(MeshVertexAttribute::new("Tri_Dist", 2, VertexFormat::Float32x3), dists);
-}
-
-// #[derive(Clone, Copy, Pod, Zeroable)]
-// #[repr(C)]
-// struct PosData {
-//     position: Vec3,
-//     padding: f32,
-// }
-
-fn tri_dist(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [[f32; 3]; 3] {
-    let (p0, p1, p2) = (Vec3::from(a), Vec3::from(b), Vec3::from(c));
-    let v0 = p2.xy() - p1.xy();
-    let v1 = p2.xy() - p0.xy();
-    let v2 = p1.xy() - p0.xy();
-    let area = (v1.x * v2.y - v1.y * v2.x).abs();
-    let mut d0 = Vec3::X * area/v0.length();
-    let mut d1 = Vec3::Y * area/v1.length();
-    let mut d2 = Vec3::Z * area/v2.length();
-    // if v0.length() > v1.length() {
-    //     if v0.length() > v2.length() {
-    //         // v0 is max
-    //         d0 *= 100.0;
-    //     } else {
-    //         // v2 is max
-    //         d2 *= 100.0;
-    //     }
-    // } else {
-    //     if v1.length() > v2.length() {
-    //         // v1 is max
-    //         d1 *= 100.0;
-    //     } else {
-    //         // v2 is max
-    //         d2 *= 100.0;
-    //     }
-    // }
-
-    [d0.into(), d1.into(), d2.into()]
 }
 
 fn star(
@@ -236,7 +143,6 @@ fn star(
     commands.spawn((
         // We use a marker component to identify the custom colored meshes
         WireframeMesh2d,
-        // Wireframe,
         // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
         handle,
         // This bundle's components are needed for something to be rendered
@@ -340,7 +246,7 @@ impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
 
 pub struct WireframeMesh2dInstance {
     pub render_instance: RenderMesh2dInstance,
-    pub dist_buffer: Buffer,
+    pub dist_buffer: Option<Buffer>,
 }
 
 pub struct WireframeDrawMesh2d;
@@ -377,7 +283,7 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
 
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
         // pass.set_vertex_buffer(1, gpu_mesh.vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, dist_buffer.slice(..));
+        pass.set_vertex_buffer(1, dist_buffer.as_ref().unwrap().slice(..));
 
         let batch_range = item.batch_range();
         match &gpu_mesh.buffer_info {
@@ -480,9 +386,12 @@ impl Plugin for WireframeMesh2dPlugin {
             Shader::from_wgsl(WIREFRAME_MESH2D_SHADER, file!()),
         );
 
+        app.add_plugins(RenderAssetPlugin::<PosBuffer, GpuImage>::default());
+
+        let render_app = app.sub_app_mut(RenderApp);
+        let node = ScreenspaceDistNode::from_world(render_app.world_mut());
         // Register our custom draw function, and add our render systems
-        app.get_sub_app_mut(RenderApp)
-            .unwrap()
+        render_app
             .add_render_command::<Transparent2d, DrawWireframeMesh2d>()
             .init_resource::<SpecializedRenderPipelines<WireframeMesh2dPipeline>>()
             .init_resource::<WireframeMesh2dInstances>()
@@ -490,19 +399,24 @@ impl Plugin for WireframeMesh2dPlugin {
                 ExtractSchedule,
                 extract_colored_mesh2d.after(extract_mesh2d),
             )
+            .add_systems(Render,
+                         prepare_bind_group.in_set(RenderSet::PrepareBindGroups))
             .add_systems(Render, queue_wireframe_mesh2d.in_set(RenderSet::QueueMeshes));
+
+        let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
+        render_graph.add_node(ScreenSpaceDistLabel, node);
+        render_graph.add_node_edge(ScreenSpaceDistLabel, bevy::render::graph::CameraDriverLabel);
+
     }
 
     fn finish(&self, app: &mut App) {
         // Register our custom pipeline
-        app.get_sub_app_mut(RenderApp)
-            .unwrap()
-            .init_resource::<WireframeMesh2dPipeline>();
+        app.sub_app_mut(RenderApp)
+            .init_resource::<WireframeMesh2dPipeline>()
+            .init_resource::<ScreenspaceDistPipeline>();
     }
-}
 
-#[derive(Component)]
-struct Wireframe;
+}
 
 /// Extract the [`WireframeMesh2d`] marker component into the render app
 pub fn extract_colored_mesh2d(
@@ -534,24 +448,19 @@ pub fn extract_colored_mesh2d(
         if ! wireframe_mesh_instances.contains_key(&entity) {
 
             let vertex_count = 30;
-            wireframe_mesh_instances.insert(entity,
-                                            WireframeMesh2dInstance {
-                                                render_instance:
+            wireframe_mesh_instances
+                .insert(entity,
+                        WireframeMesh2dInstance {
+                            render_instance:
 
-            RenderMesh2dInstance {
-                mesh_asset_id: mesh_asset_id,
-                transforms,
-                material_bind_group_id: Material2dBindGroupId::default(),
-                automatic_batching: false,
-            },
-                                                dist_buffer:
-                                                render_device.create_buffer(&BufferDescriptor {
-                                                    label: Some("dist_buffer"),
-                                                    size: (vertex_count * 4 * 4) as u64,
-                                                    usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
-                                                    mapped_at_creation: false,
-                                                })
-                                            });
+                            RenderMesh2dInstance {
+                                mesh_asset_id: mesh_asset_id,
+                                transforms,
+                                material_bind_group_id: Material2dBindGroupId::default(),
+                                automatic_batching: false,
+                            },
+                            dist_buffer: None,
+                        });
         }
     }
     *previous_len = values.len();
@@ -630,21 +539,14 @@ fn prepare_bind_group(
     mut commands: Commands,
     pipeline: Res<ScreenspaceDistPipeline>,
     render_device: Res<RenderDevice>,
-    render_mesh2d_instances: Res<RenderMesh2dInstances>,
     pos_buffers: Res<RenderAssets<PosBuffer>>,
     colored_mesh: Query<Entity, With<WireframeMesh2d>>,
-    wireframe_mesh_instances: Res<WireframeMesh2dInstances>,
+    mut wireframe_mesh_instances: ResMut<WireframeMesh2dInstances>,
 ) {
     for entity in colored_mesh.iter() {
 
-        let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
-            render_mesh2d_instances.get(&entity)
-        else {
-            return;
-        };
-
-        let Some(WireframeMesh2dInstance { dist_buffer, .. }) =
-            wireframe_mesh_instances.get(&entity)
+        let Some(WireframeMesh2dInstance { dist_buffer, render_instance:  RenderMesh2dInstance { mesh_asset_id, .. }, .. }) =
+            wireframe_mesh_instances.get_mut(&entity)
         else {
             // warn!("no wireframe mesh 2d");
             return;
@@ -653,12 +555,20 @@ fn prepare_bind_group(
             warn!("no pos buffer");
             return;
         };
+        if dist_buffer.is_none() {
+            *dist_buffer = Some(render_device.create_buffer(&BufferDescriptor {
+                label: Some("dist_buffer"),
+                size: (pos_buffer.vertex_count * 4 * 4) as u64,
+                usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
+                mapped_at_creation: false,
+            }))
+        }
         let bind_group = render_device.create_bind_group(
             None,
             &pipeline.layout,
             &BindGroupEntries::sequential((
                 pos_buffer.buffer.as_entire_buffer_binding(),
-                dist_buffer.as_entire_buffer_binding(),
+                dist_buffer.as_ref().unwrap().as_entire_buffer_binding(),
             )),
         );
         let vertex_count = pos_buffer.vertex_count;
