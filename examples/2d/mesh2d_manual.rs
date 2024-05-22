@@ -33,6 +33,7 @@ use bevy::{
         Extract, Render, RenderApp, RenderSet,
     },
     sprite::{
+        MaterialMesh2dBundle,
         extract_mesh2d, DrawMesh2d, Material2dBindGroupId, Mesh2dHandle, Mesh2dPipeline,
         Mesh2dPipelineKey, Mesh2dTransforms, MeshFlags, RenderMesh2dInstance, SetMesh2dBindGroup,
         SetMesh2dViewBindGroup, WithMesh2d,
@@ -66,6 +67,7 @@ fn star(
     render_device: Res<RenderDevice>,
     // We will add a new Mesh for the star being created
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     // mut dist_buffer: ResMut<Buffers>
 ) {
     // Let's define the mesh for the object we want to draw: a nice star.
@@ -148,6 +150,32 @@ fn star(
         // This bundle's components are needed for something to be rendered
         SpatialBundle::from_transform(Transform::from_xyz(300.0, 100.0, 1.0)),
     ));
+
+    // let mut circle: Mesh = Circle { radius: 50.0 }.into();
+    let mut circle: Mesh = Rectangle::new(25.0, 50.0).into();
+    circle.duplicate_vertices();
+
+    commands.spawn(MaterialMesh2dBundle {
+
+        // We use a marker component to identify the custom colored meshes
+        // WireframeMesh2d,
+        // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
+        mesh: Mesh2dHandle(meshes.add(circle.clone())),
+        material: materials.add(Color::hsl(180.0, 0.95, 0.7)),
+        transform:
+        // This bundle's components are needed for something to be rendered
+        Transform::from_xyz(-300.0, 100.0, 2.0),
+        ..default()
+    });
+
+    commands.spawn((
+        // We use a marker component to identify the custom colored meshes
+        // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
+        Mesh2dHandle(meshes.add(circle)),
+        // This bundle's components are needed for something to be rendered
+        SpatialBundle::from_transform(Transform::from_xyz(-300.0, -100.0, 2.0)),
+    WireframeMesh2d));
+
 
     // Spawn the camera
     commands.spawn(Camera2dBundle::default());
@@ -362,7 +390,8 @@ const WIRE_COL: vec4<f32> = vec4(1.0, 0.0, 0.0, 1.0);
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     let d = min(in.dist[0], min(in.dist[1], in.dist[2]));
     let I = exp2(-2.0 * d * d);
-    return I * WIRE_COL + (1.0 - I) * in.color;
+    return in.color;
+    //return I * WIRE_COL + (1.0 - I) * in.color;
 }
 ";
 
