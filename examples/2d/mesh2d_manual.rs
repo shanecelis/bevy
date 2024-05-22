@@ -56,27 +56,16 @@ impl Plugin for WireframePlugin {
 
     fn build(&self, app: &mut App) {
         app
-            .add_plugins(ExtractResourcePlugin::<Buffers>::default())
-            // .add_plugins(ExtractResourcePlugin::<WireframeBinding>::default())
             .add_plugins(RenderAssetPlugin::<PosBuffer, GpuImage>::default())
             ;
 
         let render_app = app.sub_app_mut(RenderApp);
-        let node = ScreenSpaceDistNode::from_world(render_app.world_mut());
+        let node = ScreenspaceDistNode::from_world(render_app.world_mut());
         render_app
             .init_resource::<WireframeMesh2dInstances>()
             .add_systems(Render,
                          prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
-            )
-            // .add_systems(Render,
-            //              prepare_wireframe_mesh2d//.in_set(RenderSet::PrepareBindGroups),
-            // );
-            // .add_systems(
-            //     ExtractSchedule,
-            //     // prepare_wireframe_mesh2d.after(extract_colored_mesh2d),
-            //     prepare_wireframe_mesh2d
-            // )
-            ;
+            );
 
         let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
         render_graph.add_node(ScreenSpaceDistLabel, node);
@@ -85,7 +74,7 @@ impl Plugin for WireframePlugin {
 
     fn finish(&self, app: &mut App) {
         let render_app = app.sub_app_mut(RenderApp);
-        render_app.init_resource::<ComputePipeline>();
+        render_app.init_resource::<ScreenspaceDistPipeline>();
     }
 }
 
@@ -210,12 +199,12 @@ fn star(
     // Set the position attribute
     star.insert_attribute(Mesh::ATTRIBUTE_POSITION, v_pos);
     // And a RGB color attribute as well
-    let mut v_color: Vec<u32> = vec![LinearRgba::BLACK.as_u32()];
-    v_color.extend_from_slice(&[LinearRgba::from(YELLOW).as_u32(); 10]);
-    star.insert_attribute(
-        MeshVertexAttribute::new("Vertex_Color", 1, VertexFormat::Uint32),
-        v_color,
-    );
+    // let mut v_color: Vec<u32> = vec![LinearRgba::BLACK.as_u32()];
+    // v_color.extend_from_slice(&[LinearRgba::from(YELLOW).as_u32(); 10]);
+    // star.insert_attribute(
+    //     MeshVertexAttribute::new("Vertex_Color", 1, VertexFormat::Uint32),
+    //     v_color,
+    // );
 
     // Now, we specify the indices of the vertex that are going to compose the
     // triangles in our star. Vertices in triangles have to be specified in CCW
@@ -248,28 +237,12 @@ fn star(
     //         usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
     //     });
 
-    let dist_buffer = render_device.create_buffer(&BufferDescriptor {
-        label: Some("dist_buffer"),
-        size: (dist.len() * 4 * 4) as u64,
-        usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
-        mapped_at_creation: false,
-    });
-
-    let pos_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("pos_buffer"),
-            contents: bytemuck::cast_slice(v_pos_4.as_slice()),
-            usage: BufferUsages::STORAGE,
-        });
-    // Don't initialize the buffer from the CPU. Try to calculate it on the gpu.
-    commands.insert_resource(Buffers { dist_buffer, pos_buffer, vertex_count });
-
 // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
     let handle = Mesh2dHandle(meshes.add(star));
     // We can now spawn the entities for the star and the camera
     commands.spawn((
         // We use a marker component to identify the custom colored meshes
-        ColoredMesh2d,
-        Wireframe,
+        WireframeMesh2d,
         handle.clone(),
         // This bundle's components are needed for something to be rendered
         SpatialBundle::INHERITED_IDENTITY,
@@ -277,7 +250,7 @@ fn star(
 
     commands.spawn((
         // We use a marker component to identify the custom colored meshes
-        ColoredMesh2d,
+        WireframeMesh2d,
         // Wireframe,
         // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
         handle,
@@ -291,16 +264,16 @@ fn star(
 
 /// A marker component for colored 2d meshes
 #[derive(Component, Default)]
-pub struct ColoredMesh2d;
+pub struct WireframeMesh2d;
 
 /// Custom pipeline for 2d meshes with vertex colors
 #[derive(Resource)]
-pub struct ColoredMesh2dPipeline {
+pub struct WireframeMesh2dPipeline {
     /// this pipeline wraps the standard [`Mesh2dPipeline`]
     mesh2d_pipeline: Mesh2dPipeline,
 }
 
-impl FromWorld for ColoredMesh2dPipeline {
+impl FromWorld for WireframeMesh2dPipeline {
     fn from_world(world: &mut World) -> Self {
         Self {
             mesh2d_pipeline: Mesh2dPipeline::from_world(world),
@@ -309,26 +282,21 @@ impl FromWorld for ColoredMesh2dPipeline {
 }
 
 // We implement `SpecializedPipeline` to customize the default rendering from `Mesh2dPipeline`
-impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
+impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
     type Key = Mesh2dPipelineKey;
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
         // Customize how to store the meshes' vertex attributes in the vertex buffer
-        // Our meshes only have position and color
         let formats = [
             // Position
             VertexFormat::Float32x3,
-            // Color
-            VertexFormat::Uint32,
-            // Dist
-            // VertexFormat::Float32x3,
         ];
 
         let vertex_layout =
             VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, formats);
         let mut dist_layout =
             VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, [VertexFormat::Float32x4]);
-        dist_layout.attributes[0].shader_location = 2;
+        dist_layout.attributes[0].shader_location = 1;
 
         let format = match key.contains(Mesh2dPipelineKey::HDR) {
             true => ViewTarget::TEXTURE_FORMAT_HDR,
@@ -338,7 +306,7 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
         RenderPipelineDescriptor {
             vertex: VertexState {
                 // Use our custom shader
-                shader: COLORED_MESH2D_SHADER_HANDLE,
+                shader: WIREFRAME_MESH2D_SHADER_HANDLE,
                 entry_point: "vertex".into(),
                 shader_defs: vec![],
                 // Use our custom vertex buffer
@@ -348,7 +316,7 @@ impl SpecializedRenderPipeline for ColoredMesh2dPipeline {
             },
             fragment: Some(FragmentState {
                 // Use our custom shader
-                shader: COLORED_MESH2D_SHADER_HANDLE,
+                shader: WIREFRAME_MESH2D_SHADER_HANDLE,
                 shader_defs: vec![],
                 entry_point: "fragment".into(),
                 targets: vec![Some(ColorTargetState {
@@ -389,8 +357,8 @@ pub struct WireframeMesh2dInstance {
     pub dist_buffer: Buffer,
 }
 
-pub struct MyDrawMesh2d;
-impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::RenderCommand<P> for MyDrawMesh2d {
+pub struct WireframeDrawMesh2d;
+impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::RenderCommand<P> for WireframeDrawMesh2d {
     type Param = (SRes<RenderAssets<GpuMesh>>, SRes<RenderMesh2dInstances>, SRes<WireframeMesh2dInstances>);
     type ViewQuery = ();
     type ItemQuery = ();
@@ -453,13 +421,13 @@ type DrawColoredMesh2d = (
     // Set the mesh uniform as bind group 1
     SetMesh2dBindGroup<1>,
     // Draw the mesh
-    MyDrawMesh2d,
+    WireframeDrawMesh2d,
     // DrawMesh2d,
 );
 
 // The custom shader can be inline like here, included from another file at build time
 // using `include_str!()`, or loaded like any other asset with `asset_server.load()`.
-const COLORED_MESH2D_SHADER: &str = r"
+const WIREFRAME_MESH2D_SHADER: &str = r"
 // Import the standard 2d mesh uniforms and set their bind groups
 #import bevy_sprite::mesh2d_functions
 
@@ -467,8 +435,7 @@ const COLORED_MESH2D_SHADER: &str = r"
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
-    @location(1) color: u32,
-    @location(2) dist: vec4<f32>,
+    @location(1) dist: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -486,8 +453,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     // Project the world position of the mesh into screen position
     let model = mesh2d_functions::get_model_matrix(vertex.instance_index);
     out.clip_position = mesh2d_functions::mesh2d_position_local_to_clip(model, vec4<f32>(vertex.position, 1.0));
-    // Unpack the `u32` from the vertex buffer into the `vec4<f32>` used by the fragment shader
-    out.color = vec4<f32>((vec4<u32>(vertex.color) >> vec4<u32>(0u, 8u, 16u, 24u)) & vec4<u32>(255u)) / 255.0;
+    out.color = vec4<f32>(1.0, 1.0, 0.0, 1.0);
     out.dist = vertex.dist;
     return out;
 }
@@ -509,11 +475,11 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
 }
 ";
 
-/// Plugin that renders [`ColoredMesh2d`]s
+/// Plugin that renders [`WireframeMesh2d`]s
 pub struct ColoredMesh2dPlugin;
 
 /// Handle to the custom shader with a unique random ID
-pub const COLORED_MESH2D_SHADER_HANDLE: Handle<Shader> =
+pub const WIREFRAME_MESH2D_SHADER_HANDLE: Handle<Shader> =
     Handle::weak_from_u128(13828845428412094821);
 
 /// Our custom pipeline needs its own instance storage
@@ -528,15 +494,15 @@ impl Plugin for ColoredMesh2dPlugin {
         // Load our custom shader
         let mut shaders = app.world_mut().resource_mut::<Assets<Shader>>();
         shaders.insert(
-            &COLORED_MESH2D_SHADER_HANDLE,
-            Shader::from_wgsl(COLORED_MESH2D_SHADER, file!()),
+            &WIREFRAME_MESH2D_SHADER_HANDLE,
+            Shader::from_wgsl(WIREFRAME_MESH2D_SHADER, file!()),
         );
 
         // Register our custom draw function, and add our render systems
         app.get_sub_app_mut(RenderApp)
             .unwrap()
             .add_render_command::<Transparent2d, DrawColoredMesh2d>()
-            .init_resource::<SpecializedRenderPipelines<ColoredMesh2dPipeline>>()
+            .init_resource::<SpecializedRenderPipelines<WireframeMesh2dPipeline>>()
             .init_resource::<RenderColoredMesh2dInstances>()
             .add_systems(
                 ExtractSchedule,
@@ -549,24 +515,28 @@ impl Plugin for ColoredMesh2dPlugin {
         // Register our custom pipeline
         app.get_sub_app_mut(RenderApp)
             .unwrap()
-            .init_resource::<ColoredMesh2dPipeline>();
+            .init_resource::<WireframeMesh2dPipeline>();
     }
 }
 
 #[derive(Component)]
 struct Wireframe;
 
-/// Extract the [`ColoredMesh2d`] marker component into the render app
-pub fn prepare_wireframe_mesh2d(
-    // FIXME: Can't reference assets in RenderApp maybe?
-    pos_buffers: Res<RenderAssets<PosBuffer>>,
-    mut buffer_map: ResMut<BufferMap>,
-    render_device: Res<RenderDevice>,
+/// Extract the [`WireframeMesh2d`] marker component into the render app
+pub fn extract_colored_mesh2d(
+    mut commands: Commands,
+    mut previous_len: Local<usize>,
     // When extracting, you must use `Extract` to mark the `SystemParam`s
     // which should be taken from the main world.
-    query:
-        Extract<Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle), With<Wireframe>>>,
+    query: Extract<
+        Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle), With<WireframeMesh2d>>,
+    >,
+    mut render_mesh_instances: ResMut<RenderColoredMesh2dInstances>,
+    mut wireframe_mesh_instances: ResMut<WireframeMesh2dInstances>,
+    render_device: Res<RenderDevice>,
+    meshes: Res<RenderAssets<GpuMesh>>,
 ) {
+    let mut values = Vec::with_capacity(*previous_len);
     for (entity, view_visibility, transform, handle) in &query {
         if !view_visibility.get() {
             continue;
@@ -576,84 +546,11 @@ pub fn prepare_wireframe_mesh2d(
             transform: (&transform.affine()).into(),
             flags: MeshFlags::empty().bits(),
         };
-        let asset_id = handle.0.id();
 
-        if !buffer_map.pos_buffers.contains_key(&asset_id) {
-            info!("Create position buffer");
-            // let mesh = Mesh::new();
-
-            // let Some(mesh) = meshes.get(asset_id) else {
-            //     warn!("No mesh");
-            //     continue;
-            // };
-
-            // let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
-            //     panic!("no position vertices");
-            // };
-            // let v_pos_4: Vec<[f32; 4]> = positions.into_iter().map(|x| pad(*x)).collect();
-
-            // let vertex_count = mesh.count_vertices();
-
-            // let pos_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            //     label: Some("pos_buffer"),
-            //     contents: bytemuck::cast_slice(v_pos_4.as_slice()),
-            //     usage: BufferUsages::STORAGE,
-            // });
-            // buffer_map.pos_buffers.insert(asset_id, pos_buffer);
-        }
-
-
-        if !buffer_map.dist_buffers.contains_key(&entity) {
-            info!("Create dist buffer");
-
-            // let mesh = Mesh::new();
-            // let Some(mesh) = meshes.get(asset_id) else {
-            //     warn!("No mesh dist");
-            //     continue;
-            // };
-            // let vertex_count = mesh.count_vertices();
-
-            // let dist_buffer = render_device.create_buffer(&BufferDescriptor {
-            //     label: Some("dist_buffer"),
-            //     size: dbg!((vertex_count * 4 * 4) as u64),
-            //     usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
-            //     mapped_at_creation: false,
-            // });
-
-            // buffer_map.dist_buffers.insert(entity, (vertex_count, dist_buffer));
-        }
-
-    }
-}
-
-/// Extract the [`ColoredMesh2d`] marker component into the render app
-pub fn extract_colored_mesh2d(
-    mut commands: Commands,
-    mut previous_len: Local<usize>,
-    // When extracting, you must use `Extract` to mark the `SystemParam`s
-    // which should be taken from the main world.
-    query: Extract<
-        Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle, Option<&Wireframe>), With<ColoredMesh2d>>,
-    >,
-    mut render_mesh_instances: ResMut<RenderColoredMesh2dInstances>,
-    mut wireframe_mesh_instances: ResMut<WireframeMesh2dInstances>,
-    render_device: Res<RenderDevice>,
-    meshes: Res<RenderAssets<GpuMesh>>,
-) {
-    let mut values = Vec::with_capacity(*previous_len);
-    for (entity, view_visibility, transform, handle, wireframe) in &query {
-        if !view_visibility.get() {
-            continue;
-        }
-
-        let transforms = Mesh2dTransforms {
-            transform: (&transform.affine()).into(),
-            flags: MeshFlags::empty().bits(),
-        };
-
-        values.push((entity, ColoredMesh2d));
+        values.push((entity, WireframeMesh2d));
 
         let mesh_asset_id = handle.0.id();
+        if ! render_mesh_instances.contains_key(&entity) {
         render_mesh_instances.insert(
             entity,
             RenderMesh2dInstance {
@@ -663,11 +560,12 @@ pub fn extract_colored_mesh2d(
                 automatic_batching: false,
             },
         );
+        }
         // let Some(gpu_mesh) = meshes.get(mesh_asset_id) else {
         //     warn!("no gpu mesh");
         //     continue;
         // };
-        if wireframe.is_some() && ! wireframe_mesh_instances.contains_key(&entity) {
+        if ! wireframe_mesh_instances.contains_key(&entity) {
             let vertex_count = 30;
             wireframe_mesh_instances.insert(entity,
                                             WireframeMesh2dInstance {
@@ -685,12 +583,12 @@ pub fn extract_colored_mesh2d(
     commands.insert_or_spawn_batch(values);
 }
 
-/// Queue the 2d meshes marked with [`ColoredMesh2d`] using our custom pipeline and draw function
+/// Queue the 2d meshes marked with [`WireframeMesh2d`] using our custom pipeline and draw function
 #[allow(clippy::too_many_arguments)]
 pub fn queue_colored_mesh2d(
     transparent_draw_functions: Res<DrawFunctions<Transparent2d>>,
-    colored_mesh2d_pipeline: Res<ColoredMesh2dPipeline>,
-    mut pipelines: ResMut<SpecializedRenderPipelines<ColoredMesh2dPipeline>>,
+    colored_mesh2d_pipeline: Res<WireframeMesh2dPipeline>,
+    mut pipelines: ResMut<SpecializedRenderPipelines<WireframeMesh2dPipeline>>,
     pipeline_cache: Res<PipelineCache>,
     msaa: Res<Msaa>,
     render_meshes: Res<RenderAssets<GpuMesh>>,
@@ -746,21 +644,6 @@ pub fn queue_colored_mesh2d(
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 struct ScreenSpaceDistLabel;
 
-#[derive(Resource, ExtractResource, Clone, Default)]
-pub struct BufferMap {
-    pos_buffers: HashMap<AssetId<Mesh>, Buffer>,
-    dist_buffers: bevy::ecs::entity::EntityHashMap<(usize, Buffer)>,
-}
-
-#[derive(Resource, ExtractResource, Clone)]
-pub struct Buffers {
-    // The vertex position buffer, indexed on Mesh Id.
-    pos_buffer: Buffer,
-    // The distance buffer, indexed on instance, requires transform too.
-    dist_buffer: Buffer,
-    vertex_count: usize,
-}
-
 #[derive(Component)]
 struct WireframeBinding {
     bind_group: BindGroup,
@@ -769,12 +652,11 @@ struct WireframeBinding {
 
 fn prepare_bind_group(
     mut commands: Commands,
-    pipeline: Res<ComputePipeline>,
+    pipeline: Res<ScreenspaceDistPipeline>,
     render_device: Res<RenderDevice>,
-    buffers: Option<Res<Buffers>>,
     render_mesh2d_instances: Res<RenderMesh2dInstances>,
     pos_buffers: Res<RenderAssets<PosBuffer>>,
-    colored_mesh: Query<Entity, With<ColoredMesh2d>>,
+    colored_mesh: Query<Entity, With<WireframeMesh2d>>,
     wireframe_mesh_instances: Res<WireframeMesh2dInstances>,
 ) {
     for entity in colored_mesh.iter() {
@@ -804,7 +686,6 @@ fn prepare_bind_group(
             )),
         );
         let vertex_count = pos_buffer.vertex_count;
-        // info!("wireframe binding inserted");
         commands.entity(entity).insert(WireframeBinding { bind_group, vertex_count });
     }
 }
@@ -860,12 +741,12 @@ impl RenderAsset for PosBuffer {
 }
 
 #[derive(Resource)]
-struct ComputePipeline {
+struct ScreenspaceDistPipeline {
     layout: BindGroupLayout,
     pipeline: CachedComputePipelineId,
 }
 
-impl FromWorld for ComputePipeline {
+impl FromWorld for ScreenspaceDistPipeline {
     fn from_world(world: &mut World) -> Self {
         let render_device = world.resource::<RenderDevice>();
         let layout = render_device.create_bind_group_layout(
@@ -887,17 +768,17 @@ impl FromWorld for ComputePipeline {
             shader_defs: Vec::new(),
             entry_point: "main".into(),
         });
-        ComputePipeline { layout, pipeline }
+        ScreenspaceDistPipeline { layout, pipeline }
     }
 }
 
-struct ScreenSpaceDistNode {
+struct ScreenspaceDistNode {
     query: QueryState<
         &'static WireframeBinding,
     >,
 }
 
-impl FromWorld for ScreenSpaceDistNode {
+impl FromWorld for ScreenspaceDistNode {
     fn from_world(world: &mut World) -> Self {
         Self {
             query: QueryState::new(world),
@@ -905,7 +786,7 @@ impl FromWorld for ScreenSpaceDistNode {
     }
 }
 
-impl render_graph::Node for ScreenSpaceDistNode {
+impl render_graph::Node for ScreenspaceDistNode {
     fn update(&mut self, world: &mut World) {
         self.query.update_archetypes(world);
     }
@@ -920,7 +801,7 @@ impl render_graph::Node for ScreenSpaceDistNode {
         for wireframe_binding in self.query.iter_manual(world) {
         let bind_group = &wireframe_binding.bind_group;
         let pipeline_cache = world.resource::<PipelineCache>();
-        let pipeline = world.resource::<ComputePipeline>();
+        let pipeline = world.resource::<ScreenspaceDistPipeline>();
 
         let mut pass = render_context
             .command_encoder()
