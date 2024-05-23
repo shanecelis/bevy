@@ -5,56 +5,60 @@
 //!
 //! [`Material2d`]: bevy::sprite::Material2d
 
+use bevy::ecs::system::{
+    lifetimeless::{SRes, SResMut},
+    SystemParamItem,
+};
+use bevy::render::{
+    mesh::GpuBufferInfo,
+    render_phase::{RenderCommandResult, TrackedRenderPass},
+};
 use bevy::{
     color::palettes::basic::YELLOW,
     core_pipeline::core_2d::Transparent2d,
     math::FloatOrd,
     prelude::*,
     render::{
-        render_graph::{self, RenderGraph, RenderLabel},
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         mesh::{GpuMesh, Indices, MeshVertexAttribute, VertexAttributeValues},
-        render_asset::{RenderAssetUsages, RenderAssets, PrepareAssetError},
+        render_asset::{PrepareAssetError, RenderAssetUsages, RenderAssets},
+        render_asset::{RenderAsset, RenderAssetPlugin},
+        render_graph::{self, RenderGraph, RenderLabel},
         render_phase::{
-            PhaseItem,
-            RenderCommand, AddRenderCommand, DrawFunctions, PhaseItemExtraIndex, SetItemPipeline,
-            SortedRenderPhase,
+            AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
+            SetItemPipeline, SortedRenderPhase,
         },
         render_resource::{
+            binding_types::{storage_buffer, storage_buffer_read_only},
             BlendState, ColorTargetState, ColorWrites, Face, FragmentState, FrontFace,
             MultisampleState, PipelineCache, PolygonMode, PrimitiveState, PrimitiveTopology,
             RenderPipelineDescriptor, SpecializedRenderPipeline, SpecializedRenderPipelines,
-            TextureFormat, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
-            binding_types::{storage_buffer, storage_buffer_read_only}, *
+            TextureFormat, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode, *,
         },
-        renderer::{RenderDevice, RenderContext},
-        render_asset::{RenderAsset, RenderAssetPlugin},
+        renderer::{RenderContext, RenderDevice},
         texture::{BevyDefault, GpuImage},
         view::{ExtractedView, ViewTarget, VisibleEntities},
         Extract, Render, RenderApp, RenderSet,
     },
     sprite::{
-        MaterialMesh2dBundle,
-        extract_mesh2d, DrawMesh2d, Material2dBindGroupId, Mesh2dHandle, Mesh2dPipeline,
-        Mesh2dPipelineKey, Mesh2dTransforms, MeshFlags, RenderMesh2dInstance, SetMesh2dBindGroup,
-        SetMesh2dViewBindGroup, WithMesh2d,
+        extract_mesh2d, DrawMesh2d, Material2dBindGroupId, MaterialMesh2dBundle, Mesh2dHandle,
+        Mesh2dPipeline, Mesh2dPipelineKey, Mesh2dTransforms, MeshFlags, RenderMesh2dInstance,
+        SetMesh2dBindGroup, SetMesh2dViewBindGroup, WithMesh2d,
     },
     utils::EntityHashMap,
 };
-use bevy::ecs::system::{lifetimeless::{SRes, SResMut}, SystemParamItem};
-use bevy::render::{
-    render_phase::{TrackedRenderPass, RenderCommandResult},
-    mesh::GpuBufferInfo,
-};
 
 use bevy::log::LogPlugin;
-use std::f32::consts::PI;
 use std::collections::HashMap;
+use std::f32::consts::PI;
 
 fn main() {
     App::new()
         .add_plugins(LogPlugin::default())
-        .add_plugins((DefaultPlugins.build().disable::<LogPlugin>(), WireframeMesh2dPlugin))
+        .add_plugins((
+            DefaultPlugins.build().disable::<LogPlugin>(),
+            WireframeMesh2dPlugin,
+        ))
         .add_systems(Startup, star)
         .run();
 }
@@ -172,7 +176,6 @@ fn star(
     commands.spawn((
         WireframeMesh2d,
         handle,
-
         SpatialBundle::INHERITED_IDENTITY,
         // SpatialBundle::from_transform(Transform::from_xyz(-300.0, -100.0, 2.0))
     ));
@@ -206,10 +209,14 @@ impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
         // Customize how to store the meshes' vertex attributes in the vertex buffer
-        let vertex_layout =
-            VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, [VertexFormat::Float32x3]);
-        let mut dist_layout =
-            VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, [VertexFormat::Float32x4]);
+        let vertex_layout = VertexBufferLayout::from_vertex_formats(
+            VertexStepMode::Vertex,
+            [VertexFormat::Float32x3],
+        );
+        let mut dist_layout = VertexBufferLayout::from_vertex_formats(
+            VertexStepMode::Vertex,
+            [VertexFormat::Float32x4],
+        );
         dist_layout.attributes[0].shader_location = 10;
 
         let format = match key.contains(Mesh2dPipelineKey::HDR) {
@@ -224,9 +231,7 @@ impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
                 entry_point: "vertex".into(),
                 shader_defs: vec![],
                 // Use our custom vertex buffer
-                buffers: vec![vertex_layout,
-                              dist_layout
-                ],
+                buffers: vec![vertex_layout, dist_layout],
             },
             fragment: Some(FragmentState {
                 // Use our custom shader
@@ -289,10 +294,11 @@ impl<P: PhaseItem> RenderCommand<P> for WireframeDrawMesh2d {
         let meshes = meshes.into_inner();
         let wireframe_mesh2d_instances = wireframe_mesh2d_instances.into_inner();
 
-        let Some(WireframeMesh2dInstance
-                 { render_instance: RenderMesh2dInstance { mesh_asset_id, .. },
-                   dist_buffer, .. }) =
-            wireframe_mesh2d_instances.get(&item.entity())
+        let Some(WireframeMesh2dInstance {
+            render_instance: RenderMesh2dInstance { mesh_asset_id, .. },
+            dist_buffer,
+            ..
+        }) = wireframe_mesh2d_instances.get(&item.entity())
         else {
             warn!("no instance");
             return RenderCommandResult::Failure;
@@ -423,14 +429,18 @@ impl Plugin for WireframeMesh2dPlugin {
                 ExtractSchedule,
                 extract_wireframe_mesh2d.after(extract_mesh2d),
             )
-            .add_systems(Render,
-                         prepare_bind_group.in_set(RenderSet::PrepareBindGroups))
-            .add_systems(Render, queue_wireframe_mesh2d.in_set(RenderSet::QueueMeshes));
+            .add_systems(
+                Render,
+                prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
+            )
+            .add_systems(
+                Render,
+                queue_wireframe_mesh2d.in_set(RenderSet::QueueMeshes),
+            );
 
         let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
         render_graph.add_node(ScreenSpaceDistLabel, node);
         render_graph.add_node_edge(ScreenSpaceDistLabel, bevy::render::graph::CameraDriverLabel);
-
     }
 
     fn finish(&self, app: &mut App) {
@@ -439,7 +449,6 @@ impl Plugin for WireframeMesh2dPlugin {
             .init_resource::<WireframeMesh2dPipeline>()
             .init_resource::<ScreenspaceDistPipeline>();
     }
-
 }
 
 /// Extract the [`WireframeMesh2d`] marker component into the render app
@@ -467,21 +476,19 @@ pub fn extract_wireframe_mesh2d(
         values.push((entity, WireframeMesh2d));
 
         let mesh_asset_id = handle.0.id();
-        if ! wireframe_mesh_instances.contains_key(&entity) {
-
-            wireframe_mesh_instances
-                .insert(entity,
-                        WireframeMesh2dInstance {
-                            render_instance:
-
-                            RenderMesh2dInstance {
-                                mesh_asset_id: mesh_asset_id,
-                                transforms,
-                                material_bind_group_id: Material2dBindGroupId::default(),
-                                automatic_batching: false,
-                            },
-                            dist_buffer: None,
-                        });
+        if !wireframe_mesh_instances.contains_key(&entity) {
+            wireframe_mesh_instances.insert(
+                entity,
+                WireframeMesh2dInstance {
+                    render_instance: RenderMesh2dInstance {
+                        mesh_asset_id,
+                        transforms,
+                        material_bind_group_id: Material2dBindGroupId::default(),
+                        automatic_batching: false,
+                    },
+                    dist_buffer: None,
+                },
+            );
         }
     }
     *previous_len = values.len();
@@ -509,7 +516,9 @@ pub fn queue_wireframe_mesh2d(
     }
     // Iterate each view (a camera is a view)
     for (visible_entities, mut transparent_phase, view) in &mut views {
-        let draw_wireframe_mesh2d = transparent_draw_functions.read().id::<DrawWireframeMesh2d>();
+        let draw_wireframe_mesh2d = transparent_draw_functions
+            .read()
+            .id::<DrawWireframeMesh2d>();
 
         let mesh_key = Mesh2dPipelineKey::from_msaa_samples(msaa.samples())
             | Mesh2dPipelineKey::from_hdr(view.hdr);
@@ -525,6 +534,12 @@ pub fn queue_wireframe_mesh2d(
                 if let Some(mesh) = render_meshes.get(mesh2d_handle) {
                     mesh2d_key |=
                         Mesh2dPipelineKey::from_primitive_topology(mesh.primitive_topology());
+                    if !matches!(mesh.primitive_topology(), PrimitiveTopology::TriangleList) {
+                        panic!(
+                            "Expected a TriangleList but got {:?}",
+                            mesh.primitive_topology()
+                        );
+                    }
                 }
 
                 let pipeline_id =
@@ -553,7 +568,7 @@ struct ScreenSpaceDistLabel;
 #[derive(Component)]
 struct WireframeBinding {
     bind_group: BindGroup,
-    vertex_count: usize
+    vertex_count: usize,
 }
 
 fn prepare_bind_group(
@@ -565,9 +580,11 @@ fn prepare_bind_group(
     mut wireframe_mesh_instances: ResMut<WireframeMesh2dInstances>,
 ) {
     for entity in wireframe_mesh.iter() {
-
-        let Some(WireframeMesh2dInstance { dist_buffer, render_instance:  RenderMesh2dInstance { mesh_asset_id, .. }, .. }) =
-            wireframe_mesh_instances.get_mut(&entity)
+        let Some(WireframeMesh2dInstance {
+            dist_buffer,
+            render_instance: RenderMesh2dInstance { mesh_asset_id, .. },
+            ..
+        }) = wireframe_mesh_instances.get_mut(&entity)
         else {
             warn!("no wireframe mesh 2d");
             return;
@@ -577,7 +594,10 @@ fn prepare_bind_group(
             return;
         };
         if dist_buffer.is_none() {
-            info!("make dist buffer with vertex count {}", pos_buffer.vertex_count);
+            info!(
+                "make dist buffer with vertex count {}",
+                pos_buffer.vertex_count
+            );
             *dist_buffer = Some(render_device.create_buffer(&BufferDescriptor {
                 label: Some("dist_buffer"),
                 size: (pos_buffer.vertex_count * 4 * 4) as u64,
@@ -594,7 +614,10 @@ fn prepare_bind_group(
             )),
         );
         let vertex_count = pos_buffer.vertex_count;
-        commands.entity(entity).insert(WireframeBinding { bind_group, vertex_count });
+        commands.entity(entity).insert(WireframeBinding {
+            bind_group,
+            vertex_count,
+        });
     }
 }
 
@@ -605,9 +628,7 @@ struct PosBuffer {
 
 impl RenderAsset for PosBuffer {
     type SourceAsset = Mesh;
-    type Param = (
-        SRes<RenderDevice>,
-    );
+    type Param = (SRes<RenderDevice>,);
 
     #[inline]
     fn asset_usage(mesh: &Self::SourceAsset) -> RenderAssetUsages {
@@ -620,12 +641,11 @@ impl RenderAsset for PosBuffer {
 
     fn prepare_asset(
         mesh: Self::SourceAsset,
-        (render_device, ): &mut SystemParamItem<
-            Self::Param,
-        >,
+        (render_device,): &mut SystemParamItem<Self::Param>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
-
-        let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
             warn!("no position vertices");
             return Err(PrepareAssetError::RetryNextUpdate(mesh));
         };
@@ -642,9 +662,8 @@ impl RenderAsset for PosBuffer {
 
         Ok(PosBuffer {
             vertex_count,
-            buffer: pos_buffer
+            buffer: pos_buffer,
         })
-
     }
 }
 
@@ -661,9 +680,10 @@ impl FromWorld for ScreenspaceDistPipeline {
             "ScreenSpaceDist",
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::COMPUTE,
-                (storage_buffer_read_only::<Vec<Vec4>>(false),
-                 storage_buffer::<Vec<Vec4>>(false),
-                 )
+                (
+                    storage_buffer_read_only::<Vec<Vec4>>(false),
+                    storage_buffer::<Vec<Vec4>>(false),
+                ),
             ),
         );
         let shader = world.load_asset("shaders/screenspace_dist.wgsl");
@@ -681,9 +701,7 @@ impl FromWorld for ScreenspaceDistPipeline {
 }
 
 struct ScreenspaceDistNode {
-    query: QueryState<
-        &'static WireframeBinding,
-    >,
+    query: QueryState<&'static WireframeBinding>,
 }
 
 impl FromWorld for ScreenspaceDistNode {
@@ -705,22 +723,21 @@ impl render_graph::Node for ScreenspaceDistNode {
         render_context: &mut RenderContext,
         world: &World,
     ) -> Result<(), render_graph::NodeRunError> {
-
         for wireframe_binding in self.query.iter_manual(world) {
-        let bind_group = &wireframe_binding.bind_group;
-        let pipeline_cache = world.resource::<PipelineCache>();
-        let pipeline = world.resource::<ScreenspaceDistPipeline>();
+            let bind_group = &wireframe_binding.bind_group;
+            let pipeline_cache = world.resource::<PipelineCache>();
+            let pipeline = world.resource::<ScreenspaceDistPipeline>();
 
-        let mut pass = render_context
-            .command_encoder()
-            .begin_compute_pass(&ComputePassDescriptor::default());
+            let mut pass = render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor::default());
 
-        let update_pipeline = pipeline_cache
-            .get_compute_pipeline(pipeline.pipeline)
-            .unwrap();
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.set_pipeline(update_pipeline);
-        pass.dispatch_workgroups((wireframe_binding.vertex_count / 3) as u32, 1, 1);
+            let update_pipeline = pipeline_cache
+                .get_compute_pipeline(pipeline.pipeline)
+                .unwrap();
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_pipeline(update_pipeline);
+            pass.dispatch_workgroups((wireframe_binding.vertex_count / 3) as u32, 1, 1);
         }
 
         Ok(())
