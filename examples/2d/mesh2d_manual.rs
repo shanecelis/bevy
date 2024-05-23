@@ -16,7 +16,8 @@ use bevy::{
         mesh::{GpuMesh, Indices, MeshVertexAttribute, VertexAttributeValues},
         render_asset::{RenderAssetUsages, RenderAssets, PrepareAssetError},
         render_phase::{
-            AddRenderCommand, DrawFunctions, PhaseItemExtraIndex, SetItemPipeline,
+            PhaseItem,
+            RenderCommand, AddRenderCommand, DrawFunctions, PhaseItemExtraIndex, SetItemPipeline,
             SortedRenderPhase,
         },
         render_resource::{
@@ -42,7 +43,7 @@ use bevy::{
 };
 use bevy::ecs::system::{lifetimeless::{SRes, SResMut}, SystemParamItem};
 use bevy::render::{
-    render_phase::{TrackedRenderPass, RenderCommand, RenderCommandResult},
+    render_phase::{TrackedRenderPass, RenderCommandResult},
     mesh::GpuBufferInfo,
 };
 
@@ -152,30 +153,29 @@ fn star(
     ));
 
     // let mut circle: Mesh = Circle { radius: 50.0 }.into();
-    let mut circle: Mesh = Rectangle::new(25.0, 50.0).into();
+    let mut shape = Triangle2d::new(Vec2::new(0.0, 0.0), Vec2::new(0.0, 100.0), Vec2::new(100.0, 0.0));
+    dbg!(shape.winding_order());
+    shape.reverse();
+    dbg!(shape.winding_order());
+    let mut circle: Mesh = shape.into();
+    // let mut circle: Mesh = Rectangle::new(25.0, 50.0).into();
+    dbg!(circle.count_vertices());
     circle.duplicate_vertices();
+    circle.asset_usage = RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD;
+    dbg!(circle.count_vertices());
+    let handle = Mesh2dHandle(meshes.add(circle.clone()));
 
     commands.spawn(MaterialMesh2dBundle {
-
-        // We use a marker component to identify the custom colored meshes
-        // WireframeMesh2d,
-        // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
-        mesh: Mesh2dHandle(meshes.add(circle.clone())),
+        mesh: handle.clone(),
         material: materials.add(Color::hsl(180.0, 0.95, 0.7)),
-        transform:
-        // This bundle's components are needed for something to be rendered
-        Transform::from_xyz(-300.0, 100.0, 2.0),
+        transform: Transform::from_xyz(-300.0, 100.0, 2.0),
         ..default()
     });
 
     commands.spawn((
-        // We use a marker component to identify the custom colored meshes
-        // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
-        Mesh2dHandle(meshes.add(circle)),
-        // This bundle's components are needed for something to be rendered
-        SpatialBundle::from_transform(Transform::from_xyz(-300.0, -100.0, 2.0)),
-    WireframeMesh2d));
-
+        WireframeMesh2d,
+        handle,
+        SpatialBundle::from_transform(Transform::from_xyz(-300.0, -100.0, 2.0))));
 
     // Spawn the camera
     commands.spawn(Camera2dBundle::default());
@@ -215,7 +215,7 @@ impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
             VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, formats);
         let mut dist_layout =
             VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, [VertexFormat::Float32x4]);
-        dist_layout.attributes[0].shader_location = 1;
+        dist_layout.attributes[0].shader_location = 10;
 
         let format = match key.contains(Mesh2dPipelineKey::HDR) {
             true => ViewTarget::TEXTURE_FORMAT_HDR,
@@ -278,7 +278,7 @@ pub struct WireframeMesh2dInstance {
 }
 
 pub struct WireframeDrawMesh2d;
-impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::RenderCommand<P> for WireframeDrawMesh2d {
+impl<P: PhaseItem> RenderCommand<P> for WireframeDrawMesh2d {
     type Param = (SRes<RenderAssets<GpuMesh>>, SRes<WireframeMesh2dInstances>);
     type ViewQuery = ();
     type ItemQuery = ();
@@ -294,12 +294,9 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
         let meshes = meshes.into_inner();
         let wireframe_mesh2d_instances = wireframe_mesh2d_instances.into_inner();
 
-        // let Some(RenderMesh2dInstance { mesh_asset_id, .. }) =
-        //     render_mesh2d_instances.get(&item.entity())
-        // else {
-        //     return RenderCommandResult::Failure;
-        // };
-        let Some(WireframeMesh2dInstance { render_instance: RenderMesh2dInstance { mesh_asset_id, .. }, dist_buffer, .. }) =
+        let Some(WireframeMesh2dInstance
+                 { render_instance: RenderMesh2dInstance { mesh_asset_id, .. },
+                   dist_buffer, .. }) =
             wireframe_mesh2d_instances.get(&item.entity())
         else {
             return RenderCommandResult::Failure;
@@ -308,9 +305,7 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
             return RenderCommandResult::Failure;
         };
 
-
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-        // pass.set_vertex_buffer(1, gpu_mesh.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, dist_buffer.as_ref().unwrap().slice(..));
 
         let batch_range = item.batch_range();
@@ -320,8 +315,10 @@ impl<P: bevy::render::render_phase::PhaseItem> bevy::render::render_phase::Rende
                 index_format,
                 count,
             } => {
-                pass.set_index_buffer(buffer.slice(..), 0, *index_format);
-                pass.draw_indexed(0..*count, 0, batch_range.clone());
+                warn!("Tried to draw indexed mesh with wireframe.");
+                return RenderCommandResult::Failure;
+                // pass.set_index_buffer(buffer.slice(..), 0, *index_format);
+                // pass.draw_indexed(0..*count, 0, batch_range.clone());
             }
             GpuBufferInfo::NonIndexed => {
                 pass.draw(0..gpu_mesh.vertex_count, batch_range.clone());
@@ -354,7 +351,7 @@ const WIREFRAME_MESH2D_SHADER: &str = r"
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
-    @location(1) dist: vec4<f32>,
+    @location(10) dist: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -362,7 +359,7 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     // We pass the vertex color to the fragment shader in location 0
     @location(0) color: vec4<f32>,
-    @location(1) dist: vec4<f32>,
+    @location(10) dist: vec4<f32>,
 };
 
 /// Entry point for the vertex shader
@@ -381,7 +378,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 struct FragmentInput {
     // The color is interpolated between vertices by default
     @location(0) color: vec4<f32>,
-    @location(1) dist: vec4<f32>,
+    @location(10) dist: vec4<f32>,
 };
 const WIRE_COL: vec4<f32> = vec4(1.0, 0.0, 0.0, 1.0);
 
@@ -390,8 +387,8 @@ const WIRE_COL: vec4<f32> = vec4(1.0, 0.0, 0.0, 1.0);
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     let d = min(in.dist[0], min(in.dist[1], in.dist[2]));
     let I = exp2(-2.0 * d * d);
-    return in.color;
-    //return I * WIRE_COL + (1.0 - I) * in.color;
+    // return in.color;
+    return I * WIRE_COL + (1.0 - I) * in.color;
 }
 ";
 
@@ -517,7 +514,7 @@ pub fn queue_wireframe_mesh2d(
     }
     // Iterate each view (a camera is a view)
     for (visible_entities, mut transparent_phase, view) in &mut views {
-        let draw_colored_mesh2d = transparent_draw_functions.read().id::<DrawWireframeMesh2d>();
+        let draw_wireframe_mesh2d = transparent_draw_functions.read().id::<DrawWireframeMesh2d>();
 
         let mesh_key = Mesh2dPipelineKey::from_msaa_samples(msaa.samples())
             | Mesh2dPipelineKey::from_hdr(view.hdr);
@@ -541,7 +538,7 @@ pub fn queue_wireframe_mesh2d(
                 let mesh_z = mesh2d_transforms.transform.translation.z;
                 transparent_phase.add(Transparent2d {
                     entity: *visible_entity,
-                    draw_function: draw_colored_mesh2d,
+                    draw_function: draw_wireframe_mesh2d,
                     pipeline: pipeline_id,
                     // The 2d render items are sorted according to their z value before rendering,
                     // in order to get correct transparency
@@ -577,7 +574,7 @@ fn prepare_bind_group(
         let Some(WireframeMesh2dInstance { dist_buffer, render_instance:  RenderMesh2dInstance { mesh_asset_id, .. }, .. }) =
             wireframe_mesh_instances.get_mut(&entity)
         else {
-            // warn!("no wireframe mesh 2d");
+            warn!("no wireframe mesh 2d");
             return;
         };
         let Some(pos_buffer) = pos_buffers.get(*mesh_asset_id) else {
@@ -640,6 +637,7 @@ impl RenderAsset for PosBuffer {
         let v_pos_4: Vec<[f32; 4]> = positions.into_iter().map(|x| pad(*x)).collect();
 
         let vertex_count = mesh.count_vertices();
+        dbg!(vertex_count);
 
         let pos_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("pos_buffer"),
