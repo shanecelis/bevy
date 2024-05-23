@@ -126,41 +126,38 @@ fn star(
     //   etc
     //   Last triangle: 0, 1, 10
     let mut indices = vec![0, 1, 10];
-    for i in 2..=10 {
-        indices.extend_from_slice(&[0, i, i - 1]);
-    }
+    // for i in 2..=10 {
+    //     indices.extend_from_slice(&[0, i, i - 1]);
+    // }
     star.insert_indices(Indices::U32(indices));
     star.duplicate_vertices();
 
-// The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
+    // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d
+    // rendering instead of 3d.
     let handle = Mesh2dHandle(meshes.add(star));
-    // We can now spawn the entities for the star and the camera
-    commands.spawn((
-        // We use a marker component to identify the custom colored meshes
-        WireframeMesh2d,
-        handle.clone(),
-        // This bundle's components are needed for something to be rendered
-        SpatialBundle::INHERITED_IDENTITY,
-    ));
+    // commands.spawn((
+    //     WireframeMesh2d,
+    //     handle.clone(),
+    //     SpatialBundle::INHERITED_IDENTITY,
+    // ));
 
-    commands.spawn((
-        // We use a marker component to identify the custom colored meshes
-        WireframeMesh2d,
-        // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
-        handle,
-        // This bundle's components are needed for something to be rendered
-        SpatialBundle::from_transform(Transform::from_xyz(300.0, 100.0, 1.0)),
-    ));
+    // commands.spawn((
+    //     WireframeMesh2d,
+    //     handle,
+    //     SpatialBundle::from_transform(Transform::from_xyz(300.0, 100.0, 1.0)),
+    // ));
 
-    // let mut circle: Mesh = Circle { radius: 50.0 }.into();
-    let mut shape = Triangle2d::new(Vec2::new(0.0, 0.0), Vec2::new(0.0, 100.0), Vec2::new(100.0, 0.0));
-    dbg!(shape.winding_order());
-    shape.reverse();
-    dbg!(shape.winding_order());
+    let mut shape = Circle { radius: 50.0 };
+    // let mut shape = Triangle2d::new(Vec2::new(0.0, 0.0), Vec2::new(0.0, -100.0), Vec2::new(-100.0, -100.0));
+    // let mut shape = Rectangle::new(25.0, 50.0);
+    // dbg!(shape.winding_order());
+    // shape.reverse();
+    // dbg!(shape.winding_order());
     let mut circle: Mesh = shape.into();
-    // let mut circle: Mesh = Rectangle::new(25.0, 50.0).into();
+    // let mut circle: Mesh = Rectangle::new(25.0, 50.0);
     dbg!(circle.count_vertices());
     circle.duplicate_vertices();
+    // dbg!(&circle);
     circle.asset_usage = RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD;
     dbg!(circle.count_vertices());
     let handle = Mesh2dHandle(meshes.add(circle.clone()));
@@ -175,7 +172,10 @@ fn star(
     commands.spawn((
         WireframeMesh2d,
         handle,
-        SpatialBundle::from_transform(Transform::from_xyz(-300.0, -100.0, 2.0))));
+
+        SpatialBundle::INHERITED_IDENTITY,
+        // SpatialBundle::from_transform(Transform::from_xyz(-300.0, -100.0, 2.0))
+    ));
 
     // Spawn the camera
     commands.spawn(Camera2dBundle::default());
@@ -206,13 +206,8 @@ impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
         // Customize how to store the meshes' vertex attributes in the vertex buffer
-        let formats = [
-            // Position
-            VertexFormat::Float32x3,
-        ];
-
         let vertex_layout =
-            VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, formats);
+            VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, [VertexFormat::Float32x3]);
         let mut dist_layout =
             VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, [VertexFormat::Float32x4]);
         dist_layout.attributes[0].shader_location = 10;
@@ -254,7 +249,7 @@ impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
             push_constant_ranges: vec![],
             primitive: PrimitiveState {
                 front_face: FrontFace::Ccw,
-                cull_mode: Some(Face::Back),
+                cull_mode: None, //Some(Face::Back),
                 unclipped_depth: false,
                 polygon_mode: PolygonMode::Fill,
                 conservative: false,
@@ -267,7 +262,7 @@ impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
-            label: Some("colored_mesh2d_pipeline".into()),
+            label: Some("wireframe_mesh2d_pipeline".into()),
         }
     }
 }
@@ -299,9 +294,11 @@ impl<P: PhaseItem> RenderCommand<P> for WireframeDrawMesh2d {
                    dist_buffer, .. }) =
             wireframe_mesh2d_instances.get(&item.entity())
         else {
+            warn!("no instance");
             return RenderCommandResult::Failure;
         };
         let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
+            warn!("no mesh");
             return RenderCommandResult::Failure;
         };
 
@@ -322,6 +319,7 @@ impl<P: PhaseItem> RenderCommand<P> for WireframeDrawMesh2d {
             }
             GpuBufferInfo::NonIndexed => {
                 pass.draw(0..gpu_mesh.vertex_count, batch_range.clone());
+                // pass.draw(0..6, batch_range.clone());
             }
         }
         RenderCommandResult::Success
@@ -358,7 +356,6 @@ struct VertexOutput {
     // The vertex shader must set the on-screen position of the vertex
     @builtin(position) clip_position: vec4<f32>,
     // We pass the vertex color to the fragment shader in location 0
-    @location(0) color: vec4<f32>,
     @location(10) dist: vec4<f32>,
 };
 
@@ -369,7 +366,8 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     // Project the world position of the mesh into screen position
     let model = mesh2d_functions::get_model_matrix(vertex.instance_index);
     out.clip_position = mesh2d_functions::mesh2d_position_local_to_clip(model, vec4<f32>(vertex.position, 1.0));
-    out.color = vec4<f32>(1.0, 1.0, 0.0, 1.0);
+    // out.clip_position = vec4<f32>(vertex.position / 100.0, 1.0);
+    // out.color = vec4<f32>(1.0, 1.0, 0.0, 1.0);
     out.dist = vertex.dist;
     return out;
 }
@@ -377,7 +375,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 // The input of the fragment shader must correspond to the output of the vertex shader for all `location`s
 struct FragmentInput {
     // The color is interpolated between vertices by default
-    @location(0) color: vec4<f32>,
+    // @location(0) color: vec4<f32>,
     @location(10) dist: vec4<f32>,
 };
 const WIRE_COL: vec4<f32> = vec4(1.0, 0.0, 0.0, 1.0);
@@ -385,10 +383,11 @@ const WIRE_COL: vec4<f32> = vec4(1.0, 0.0, 0.0, 1.0);
 /// Entry point for the fragment shader
 @fragment
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
+    let color = vec4<f32>(1.0, 1.0, 0.0, 1.0);
     let d = min(in.dist[0], min(in.dist[1], in.dist[2]));
-    let I = exp2(-2.0 * d * d);
+    let I = exp2(-0.5 * d * d);
     // return in.color;
-    return I * WIRE_COL + (1.0 - I) * in.color;
+    return I * WIRE_COL + (1.0 - I) * color;
 }
 ";
 
@@ -397,7 +396,7 @@ pub struct WireframeMesh2dPlugin;
 
 /// Handle to the custom shader with a unique random ID
 pub const WIREFRAME_MESH2D_SHADER_HANDLE: Handle<Shader> =
-    Handle::weak_from_u128(13828845428412094821);
+    Handle::weak_from_u128(0x1e143d1bcc8b4699859b8863ef474752);
 
 /// Our custom pipeline needs its own instance storage
 #[derive(Resource, Deref, DerefMut, Default)]
@@ -411,7 +410,6 @@ impl Plugin for WireframeMesh2dPlugin {
             &WIREFRAME_MESH2D_SHADER_HANDLE,
             Shader::from_wgsl(WIREFRAME_MESH2D_SHADER, file!()),
         );
-
         app.add_plugins(RenderAssetPlugin::<PosBuffer, GpuImage>::default());
 
         let render_app = app.sub_app_mut(RenderApp);
@@ -423,7 +421,7 @@ impl Plugin for WireframeMesh2dPlugin {
             .init_resource::<WireframeMesh2dInstances>()
             .add_systems(
                 ExtractSchedule,
-                extract_colored_mesh2d.after(extract_mesh2d),
+                extract_wireframe_mesh2d.after(extract_mesh2d),
             )
             .add_systems(Render,
                          prepare_bind_group.in_set(RenderSet::PrepareBindGroups))
@@ -445,7 +443,7 @@ impl Plugin for WireframeMesh2dPlugin {
 }
 
 /// Extract the [`WireframeMesh2d`] marker component into the render app
-pub fn extract_colored_mesh2d(
+pub fn extract_wireframe_mesh2d(
     mut commands: Commands,
     mut previous_len: Local<usize>,
     // When extracting, you must use `Extract` to mark the `SystemParam`s
@@ -454,8 +452,6 @@ pub fn extract_colored_mesh2d(
         Query<(Entity, &ViewVisibility, &GlobalTransform, &Mesh2dHandle), With<WireframeMesh2d>>,
     >,
     mut wireframe_mesh_instances: ResMut<WireframeMesh2dInstances>,
-    render_device: Res<RenderDevice>,
-    meshes: Res<RenderAssets<GpuMesh>>,
 ) {
     let mut values = Vec::with_capacity(*previous_len);
     for (entity, view_visibility, transform, handle) in &query {
@@ -473,7 +469,6 @@ pub fn extract_colored_mesh2d(
         let mesh_asset_id = handle.0.id();
         if ! wireframe_mesh_instances.contains_key(&entity) {
 
-            let vertex_count = 30;
             wireframe_mesh_instances
                 .insert(entity,
                         WireframeMesh2dInstance {
@@ -497,7 +492,7 @@ pub fn extract_colored_mesh2d(
 #[allow(clippy::too_many_arguments)]
 pub fn queue_wireframe_mesh2d(
     transparent_draw_functions: Res<DrawFunctions<Transparent2d>>,
-    colored_mesh2d_pipeline: Res<WireframeMesh2dPipeline>,
+    wireframe_mesh2d_pipeline: Res<WireframeMesh2dPipeline>,
     mut pipelines: ResMut<SpecializedRenderPipelines<WireframeMesh2dPipeline>>,
     pipeline_cache: Res<PipelineCache>,
     msaa: Res<Msaa>,
@@ -533,7 +528,7 @@ pub fn queue_wireframe_mesh2d(
                 }
 
                 let pipeline_id =
-                    pipelines.specialize(&pipeline_cache, &colored_mesh2d_pipeline, mesh2d_key);
+                    pipelines.specialize(&pipeline_cache, &wireframe_mesh2d_pipeline, mesh2d_key);
 
                 let mesh_z = mesh2d_transforms.transform.translation.z;
                 transparent_phase.add(Transparent2d {
@@ -566,10 +561,10 @@ fn prepare_bind_group(
     pipeline: Res<ScreenspaceDistPipeline>,
     render_device: Res<RenderDevice>,
     pos_buffers: Res<RenderAssets<PosBuffer>>,
-    colored_mesh: Query<Entity, With<WireframeMesh2d>>,
+    wireframe_mesh: Query<Entity, With<WireframeMesh2d>>,
     mut wireframe_mesh_instances: ResMut<WireframeMesh2dInstances>,
 ) {
-    for entity in colored_mesh.iter() {
+    for entity in wireframe_mesh.iter() {
 
         let Some(WireframeMesh2dInstance { dist_buffer, render_instance:  RenderMesh2dInstance { mesh_asset_id, .. }, .. }) =
             wireframe_mesh_instances.get_mut(&entity)
@@ -582,6 +577,7 @@ fn prepare_bind_group(
             return;
         };
         if dist_buffer.is_none() {
+            info!("make dist buffer with vertex count {}", pos_buffer.vertex_count);
             *dist_buffer = Some(render_device.create_buffer(&BufferDescriptor {
                 label: Some("dist_buffer"),
                 size: (pos_buffer.vertex_count * 4 * 4) as u64,
@@ -622,7 +618,6 @@ impl RenderAsset for PosBuffer {
         Some(mesh.count_vertices() * 4 * 4)
     }
 
-    /// Converts the extracted mesh a into [`GpuMesh`].
     fn prepare_asset(
         mesh: Self::SourceAsset,
         (render_device, ): &mut SystemParamItem<
