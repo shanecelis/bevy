@@ -106,12 +106,16 @@ fn star(
     }
     star.insert_indices(Indices::U32(indices));
 
+    let shape = Circle { radius: 50.0 };
+    // let shape = Triangle2d::new(Vec2::new(0., 0.), Vec2::new(-100., -100.), Vec2::new(0., -100.));
+    let mesh: Mesh = shape.into();
     // We can now spawn the entities for the star and the camera
     commands.spawn((
         // We use a marker component to identify the custom colored meshes
         ColoredMesh2d,
         // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d rendering instead of 3d
-        Mesh2dHandle(meshes.add(star)),
+        // Mesh2dHandle(meshes.add(star)),
+        Mesh2dHandle(meshes.add(mesh)),
         // This bundle's components are needed for something to be rendered
         SpatialBundle::INHERITED_IDENTITY,
     ));
@@ -262,7 +266,8 @@ struct FragmentInput {
 /// Entry point for the fragment shader
 @fragment
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
-    return in.color;
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    // return in.color;
 }
 ";
 
