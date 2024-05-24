@@ -211,7 +211,11 @@ impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
         // Customize how to store the meshes' vertex attributes in the vertex buffer
         let vertex_layout = VertexBufferLayout::from_vertex_formats(
             VertexStepMode::Vertex,
-            [VertexFormat::Float32x3],
+            [
+                VertexFormat::Float32x3,
+                VertexFormat::Float32x3,
+                VertexFormat::Float32x2,
+            ],
         );
         let mut dist_layout = VertexBufferLayout::from_vertex_formats(
             VertexStepMode::Vertex,
@@ -391,7 +395,7 @@ const WIRE_COL: vec4<f32> = vec4(1.0, 0.0, 0.0, 1.0);
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     let color = vec4<f32>(1.0, 1.0, 0.0, 1.0);
     let d = min(in.dist[0], min(in.dist[1], in.dist[2]));
-    let I = exp2(-0.5 * d * d);
+    let I = exp2(-2.0 * d * d);
     // return in.color;
     return I * WIRE_COL + (1.0 - I) * color;
 }
