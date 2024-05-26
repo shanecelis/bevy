@@ -23,7 +23,6 @@ struct OutputData {
 @compute @workgroup_size(1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = global_id.x * 3;  // This index maps to a set of vertices (assuming they come in groups of 3)
-    // let index = global_id.x;  // This index maps to a set of vertices (assuming they come in groups of 3)
 
     // Ensure we have enough data (assuming input vertices come in groups of 3)
     if (index + 2u < arrayLength(&vertexInput)) {
@@ -33,15 +32,25 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // let p0 = (vertexInput[index].position.xy / vertexInput[index].position.w);
         // let p1 = (vertexInput[index + 1].position.xy / vertexInput[index + 1].position.w);
         // let p2 = (vertexInput[index + 2].position.xy / vertexInput[index + 2].position.w);
+#ifdef MODEL_DIST
+        let p0 = vertexInput[index].position.xyz;
+        let p1 = vertexInput[index + 1].position.xyz;
+        let p2 = vertexInput[index + 2].position.xyz;
+#else
         let p0 = vertexInput[index].position.xy;
         let p1 = vertexInput[index + 1].position.xy;
         let p2 = vertexInput[index + 2].position.xy;
+#endif
 
         let v0 = p2 - p1;
         let v1 = p2 - p0;
         let v2 = p1 - p0;
 
+#ifdef MODEL_DIST
+        let area = length(cross(v1, v2)) / 2;
+#else
         let area = abs(v1.x * v2.y - v1.y * v2.x);
+#endif
 
         outputBuffer[index].dist = vec4(area / length(v0), 0, 0, 0);
         outputBuffer[index + 1].dist = vec4(0, area / length(v1), 0, 0);

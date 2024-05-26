@@ -111,8 +111,11 @@ fn star(
         // Add the vertex position.
         v_pos.push([r * a.sin(), r * a.cos(), 0.0]);
     }
+
     // Set the position attribute
     star.insert_attribute(Mesh::ATTRIBUTE_POSITION, v_pos);
+    // star.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0., 1.]; 10]);
+    // star.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 0.]; 10]);
     // And a RGB color attribute as well
     // let mut v_color: Vec<u32> = vec![LinearRgba::BLACK.as_u32()];
     // v_color.extend_from_slice(&[LinearRgba::from(YELLOW).as_u32(); 10]);
@@ -131,20 +134,20 @@ fn star(
     //   etc
     //   Last triangle: 0, 1, 10
     let mut indices = vec![0, 1, 10];
-    // for i in 2..=10 {
-    //     indices.extend_from_slice(&[0, i, i - 1]);
-    // }
+    for i in 2..=10 {
+        indices.extend_from_slice(&[0, i, i - 1]);
+    }
     star.insert_indices(Indices::U32(indices));
     star.duplicate_vertices();
 
     // The `Handle<Mesh>` needs to be wrapped in a `Mesh2dHandle` to use 2d
     // rendering instead of 3d.
     let handle = Mesh2dHandle(meshes.add(star));
-    // commands.spawn((
-    //     WireframeMesh2d,
-    //     handle.clone(),
-    //     SpatialBundle::INHERITED_IDENTITY,
-    // ));
+    commands.spawn((
+        WireframeMesh2d,
+        handle.clone(),
+        SpatialBundle::INHERITED_IDENTITY,
+    ));
 
     // commands.spawn((
     //     WireframeMesh2d,
@@ -170,7 +173,7 @@ fn star(
     commands.spawn(MaterialMesh2dBundle {
         mesh: handle.clone(),
         material: materials.add(Color::hsl(180.0, 0.95, 0.7)),
-        transform: Transform::from_xyz(-300.0, 100.0, 2.0),
+        transform: Transform::from_xyz(-300.0, 100.0, 10.0),
         ..default()
     });
 

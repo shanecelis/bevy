@@ -78,6 +78,7 @@ impl SpecializedMeshPipeline for WireframeMesh2dPipeline {
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
         let mut descriptor = self.mesh2d_pipeline.specialize(key, layout)?;
 
+        // Customize how to store the meshes' vertex attributes in the vertex buffer
         descriptor.vertex.buffers.push(VertexBufferLayout {
             array_stride: std::mem::size_of::<Vec4>() as u64,
             step_mode: VertexStepMode::Vertex,
@@ -93,7 +94,6 @@ impl SpecializedMeshPipeline for WireframeMesh2dPipeline {
         descriptor.vertex.shader = WIREFRAME_MESH2D_SHADER_HANDLE;
         descriptor.fragment.as_mut().unwrap().shader = WIREFRAME_MESH2D_SHADER_HANDLE;
         descriptor.label = Some("wireframe_mesh2d_pipeline".into());
-        // Customize how to store the meshes' vertex attributes in the vertex buffer
         Ok(descriptor)
     }
 }
@@ -189,9 +189,10 @@ type DrawWireframeMesh2d = (
     SetMesh2dBindGroup<1>,
     // Set the dist buffer as vertex buffer 1
     SetDistVertexBuffer<1>,
-    // WireframeDrawMesh2d,
     // Draw the mesh
     DrawMesh2d,
+    // XXX: This was our complicated way of setting the DistVertexBuffer.
+    // WireframeDrawMesh2d,
 );
 
 // The custom shader can be inline like here, included from another file at build time
@@ -394,7 +395,7 @@ pub fn queue_wireframe_mesh2d(
                 }
                 let pipeline_id =
                     pipelines.specialize(&pipeline_cache, &wireframe_mesh2d_pipeline, mesh2d_key, &mesh.layout)
-                             .expect("could not specialize");
+                             .expect("specialize 2d pipeline");
 
                 let mesh_z = mesh2d_transforms.transform.translation.z;
                 transparent_phase.add(Transparent2d {
@@ -425,7 +426,6 @@ struct WireframeBinding {
 #[derive(Component)]
 pub struct DistBuffer {
     buffer: Buffer,
-    vertex_count: usize,
 }
 
 fn prepare_dist_buffers(
@@ -441,16 +441,15 @@ fn prepare_dist_buffers(
             warn!("no gpu mesh");
             continue;
         };
-        let vertex_count = gpu_mesh.vertex_count;
+        let vertex_count = gpu_mesh.vertex_count as usize;
         let buffer = render_device.create_buffer(&BufferDescriptor {
                 label: Some("dist_buffer"),
-                size: (vertex_count * 4 * 4) as u64,
+                size: (std::mem::size_of::<Vec4>() * vertex_count) as u64,
                 usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
                 mapped_at_creation: false,
             });
         commands.entity(entity).insert(DistBuffer {
             buffer,
-            vertex_count: vertex_count as usize,
         });
     }
 }
@@ -506,7 +505,7 @@ impl RenderAsset for PosBuffer {
     }
 
     fn byte_len(mesh: &Self::SourceAsset) -> Option<usize> {
-        Some(mesh.count_vertices() * 4 * 4)
+        Some(mesh.count_vertices() * std::mem::size_of::<Vec4>())
     }
 
     fn prepare_asset(
@@ -522,7 +521,6 @@ impl RenderAsset for PosBuffer {
         let v_pos_4: Vec<[f32; 4]> = positions.into_iter().map(|x| pad(*x)).collect();
 
         let vertex_count = mesh.count_vertices();
-        dbg!(vertex_count);
 
         let pos_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("pos_buffer"),
@@ -556,14 +554,15 @@ impl FromWorld for ScreenspaceDistPipeline {
                 ),
             ),
         );
+        let shader_defs = vec!["MODEL_DIST".into()];
         let shader = world.load_asset("shaders/screenspace_dist.wgsl");
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("Wireframe compute shader".into()),
             layout: vec![layout.clone()],
             push_constant_ranges: Vec::new(),
-            shader: shader.clone(),
-            shader_defs: Vec::new(),
+            shader,
+            shader_defs,
             entry_point: "main".into(),
         });
         ScreenspaceDistPipeline { layout, pipeline }
