@@ -3,7 +3,7 @@ use bevy::ecs::system::{
     SystemParamItem,
 };
 use bevy::render::{
-    mesh::GpuBufferInfo,
+    mesh::{GpuBufferInfo,MeshVertexBufferLayoutRef},
     render_phase::{RenderCommandResult, TrackedRenderPass},
 };
 use bevy::{
@@ -69,134 +69,115 @@ fn pad(v: [f32; 3]) -> [f32; 4] {
 }
 
 // We implement `SpecializedPipeline` to customize the default rendering from `Mesh2dPipeline`
-impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
+impl SpecializedMeshPipeline for WireframeMesh2dPipeline {
     type Key = Mesh2dPipelineKey;
 
-    fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
+    fn specialize(&self,
+                  key: Self::Key,
+                  layout: &MeshVertexBufferLayoutRef,
+    ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+        let mut descriptor = self.mesh2d_pipeline.specialize(key, layout)?;
+
+        descriptor.vertex.buffers.push(VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vec4>() as u64,
+            step_mode: VertexStepMode::Vertex,
+            attributes: vec![
+                VertexAttribute {
+                    format: VertexFormat::Float32x4,
+                    offset: 0,
+                    shader_location: 10, // shader locations 0-2 are taken up by Position, Normal and UV attributes
+                },
+            ],
+        });
+
+        descriptor.vertex.shader = WIREFRAME_MESH2D_SHADER_HANDLE;
+        descriptor.fragment.as_mut().unwrap().shader = WIREFRAME_MESH2D_SHADER_HANDLE;
+        descriptor.label = Some("wireframe_mesh2d_pipeline".into());
         // Customize how to store the meshes' vertex attributes in the vertex buffer
-        let vertex_layout = VertexBufferLayout::from_vertex_formats(
-            VertexStepMode::Vertex,
-            [
-                VertexFormat::Float32x3,
-                VertexFormat::Float32x3,
-                VertexFormat::Float32x2,
-            ],
-        );
-        let mut dist_layout = VertexBufferLayout::from_vertex_formats(
-            VertexStepMode::Vertex,
-            [VertexFormat::Float32x4],
-        );
-        dist_layout.attributes[0].shader_location = 10;
-
-        let format = match key.contains(Mesh2dPipelineKey::HDR) {
-            true => ViewTarget::TEXTURE_FORMAT_HDR,
-            false => TextureFormat::bevy_default(),
-        };
-
-        RenderPipelineDescriptor {
-            vertex: VertexState {
-                // Use our custom shader
-                shader: WIREFRAME_MESH2D_SHADER_HANDLE,
-                entry_point: "vertex".into(),
-                shader_defs: vec![],
-                // Use our custom vertex buffer
-                buffers: vec![vertex_layout, dist_layout],
-            },
-            fragment: Some(FragmentState {
-                // Use our custom shader
-                shader: WIREFRAME_MESH2D_SHADER_HANDLE,
-                shader_defs: vec![],
-                entry_point: "fragment".into(),
-                targets: vec![Some(ColorTargetState {
-                    format,
-                    blend: Some(BlendState::ALPHA_BLENDING),
-                    write_mask: ColorWrites::ALL,
-                })],
-            }),
-            // Use the two standard uniforms for 2d meshes
-            layout: vec![
-                // Bind group 0 is the view uniform
-                self.mesh2d_pipeline.view_layout.clone(),
-                // Bind group 1 is the mesh uniform
-                self.mesh2d_pipeline.mesh_layout.clone(),
-            ],
-            push_constant_ranges: vec![],
-            primitive: PrimitiveState {
-                front_face: FrontFace::Ccw,
-                cull_mode: None, //Some(Face::Back),
-                unclipped_depth: false,
-                polygon_mode: PolygonMode::Fill,
-                conservative: false,
-                topology: key.primitive_topology(),
-                strip_index_format: None,
-            },
-            depth_stencil: None,
-            multisample: MultisampleState {
-                count: key.msaa_samples(),
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            label: Some("wireframe_mesh2d_pipeline".into()),
-        }
+        Ok(descriptor)
     }
 }
 
-pub struct WireframeDrawMesh2d;
-impl<P: PhaseItem> RenderCommand<P> for WireframeDrawMesh2d {
-    type Param = (SRes<RenderAssets<GpuMesh>>, SRes<WireframeMesh2dInstances>);
+pub struct SetDistVertexBuffer<const I: usize>;
+impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetDistVertexBuffer<I> {
+    type Param = ();
     type ViewQuery = ();
     type ItemQuery = Read<DistBuffer>;
 
     #[inline]
     fn render<'w>(
-        item: &P,
+        _item: &P,
         _view: (),
         dist_buffer: Option<&'w DistBuffer>,
-        (meshes, wireframe_mesh2d_instances): SystemParamItem<'w, '_, Self::Param>,
+        mesh2d_bind_group: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        let meshes = meshes.into_inner();
-        let wireframe_mesh2d_instances = wireframe_mesh2d_instances.into_inner();
 
-        let Some(RenderMesh2dInstance { mesh_asset_id,
-            ..
-        }) = wireframe_mesh2d_instances.get(&item.entity())
-        else {
-            warn!("no instance");
-            return RenderCommandResult::Failure;
-        };
-        let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
-            warn!("no mesh");
-            return RenderCommandResult::Failure;
-        };
         let Some(dist_buffer) = dist_buffer else {
             warn!("no dist");
             return RenderCommandResult::Failure;
         };
-
-        pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, dist_buffer.buffer.slice(..));
-
-        let batch_range = item.batch_range();
-        match &gpu_mesh.buffer_info {
-            GpuBufferInfo::Indexed {
-                buffer,
-                index_format,
-                count,
-            } => {
-                warn!("Tried to draw indexed mesh with wireframe.");
-                return RenderCommandResult::Failure;
-                // pass.set_index_buffer(buffer.slice(..), 0, *index_format);
-                // pass.draw_indexed(0..*count, 0, batch_range.clone());
-            }
-            GpuBufferInfo::NonIndexed => {
-                pass.draw(0..gpu_mesh.vertex_count, batch_range.clone());
-                // pass.draw(0..6, batch_range.clone());
-            }
-        }
+        pass.set_vertex_buffer(I, dist_buffer.buffer.slice(..));
         RenderCommandResult::Success
     }
 }
+
+// pub struct WireframeDrawMesh2d;
+// impl<P: PhaseItem> RenderCommand<P> for WireframeDrawMesh2d {
+//     type Param = (SRes<RenderAssets<GpuMesh>>, SRes<WireframeMesh2dInstances>);
+//     type ViewQuery = ();
+//     type ItemQuery = Read<DistBuffer>;
+
+//     #[inline]
+//     fn render<'w>(
+//         item: &P,
+//         _view: (),
+//         dist_buffer: Option<&'w DistBuffer>,
+//         (meshes, wireframe_mesh2d_instances): SystemParamItem<'w, '_, Self::Param>,
+//         pass: &mut TrackedRenderPass<'w>,
+//     ) -> RenderCommandResult {
+//         let meshes = meshes.into_inner();
+//         let wireframe_mesh2d_instances = wireframe_mesh2d_instances.into_inner();
+
+//         let Some(RenderMesh2dInstance { mesh_asset_id,
+//             ..
+//         }) = wireframe_mesh2d_instances.get(&item.entity())
+//         else {
+//             warn!("no instance");
+//             return RenderCommandResult::Failure;
+//         };
+//         let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
+//             warn!("no mesh");
+//             return RenderCommandResult::Failure;
+//         };
+//         let Some(dist_buffer) = dist_buffer else {
+//             warn!("no dist");
+//             return RenderCommandResult::Failure;
+//         };
+
+//         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+//         // pass.set_vertex_buffer(1, dist_buffer.buffer.slice(..));
+
+//         let batch_range = item.batch_range();
+//         match &gpu_mesh.buffer_info {
+//             GpuBufferInfo::Indexed {
+//                 buffer,
+//                 index_format,
+//                 count,
+//             } => {
+//                 warn!("Tried to draw indexed mesh with wireframe.");
+//                 return RenderCommandResult::Failure;
+//                 // pass.set_index_buffer(buffer.slice(..), 0, *index_format);
+//                 // pass.draw_indexed(0..*count, 0, batch_range.clone());
+//             }
+//             GpuBufferInfo::NonIndexed => {
+//                 pass.draw(0..gpu_mesh.vertex_count, batch_range.clone());
+//                 // pass.draw(0..6, batch_range.clone());
+//             }
+//         }
+//         RenderCommandResult::Success
+//     }
+// }
 
 // This specifies how to render a colored 2d mesh
 type DrawWireframeMesh2d = (
@@ -206,9 +187,11 @@ type DrawWireframeMesh2d = (
     SetMesh2dViewBindGroup<0>,
     // Set the mesh uniform as bind group 1
     SetMesh2dBindGroup<1>,
+    // Set the dist buffer as vertex buffer 1
+    SetDistVertexBuffer<1>,
+    // WireframeDrawMesh2d,
     // Draw the mesh
-    WireframeDrawMesh2d,
-    // DrawMesh2d,
+    DrawMesh2d,
 );
 
 // The custom shader can be inline like here, included from another file at build time
@@ -289,7 +272,7 @@ impl Plugin for WireframeMesh2dPlugin {
         // Register our custom draw function, and add our render systems
         render_app
             .add_render_command::<Transparent2d, DrawWireframeMesh2d>()
-            .init_resource::<SpecializedRenderPipelines<WireframeMesh2dPipeline>>()
+            .init_resource::<SpecializedMeshPipelines<WireframeMesh2dPipeline>>()
             .init_resource::<WireframeMesh2dInstances>()
             .add_systems(
                 ExtractSchedule,
@@ -366,7 +349,7 @@ pub fn extract_wireframe_mesh2d(
 pub fn queue_wireframe_mesh2d(
     transparent_draw_functions: Res<DrawFunctions<Transparent2d>>,
     wireframe_mesh2d_pipeline: Res<WireframeMesh2dPipeline>,
-    mut pipelines: ResMut<SpecializedRenderPipelines<WireframeMesh2dPipeline>>,
+    mut pipelines: ResMut<SpecializedMeshPipelines<WireframeMesh2dPipeline>>,
     pipeline_cache: Res<PipelineCache>,
     msaa: Res<Msaa>,
     render_meshes: Res<RenderAssets<GpuMesh>>,
@@ -396,19 +379,22 @@ pub fn queue_wireframe_mesh2d(
                 let mesh2d_transforms = &mesh_instance.transforms;
                 // Get our specialized pipeline
                 let mut mesh2d_key = mesh_key;
-                if let Some(mesh) = render_meshes.get(mesh2d_handle) {
-                    mesh2d_key |=
-                        Mesh2dPipelineKey::from_primitive_topology(mesh.primitive_topology());
-                    if !matches!(mesh.primitive_topology(), PrimitiveTopology::TriangleList) {
-                        panic!(
-                            "Expected a TriangleList but got {:?}",
-                            mesh.primitive_topology()
-                        );
-                    }
-                }
+                let Some(mesh) = render_meshes.get(mesh2d_handle) else {
+                    warn!("No mesh");
+                    continue;
+                };
 
+                mesh2d_key |=
+                    Mesh2dPipelineKey::from_primitive_topology(mesh.primitive_topology());
+                if !matches!(mesh.primitive_topology(), PrimitiveTopology::TriangleList) {
+                    panic!(
+                        "Expected a TriangleList but got {:?}",
+                        mesh.primitive_topology()
+                    );
+                }
                 let pipeline_id =
-                    pipelines.specialize(&pipeline_cache, &wireframe_mesh2d_pipeline, mesh2d_key);
+                    pipelines.specialize(&pipeline_cache, &wireframe_mesh2d_pipeline, mesh2d_key, &mesh.layout)
+                             .expect("could not specialize");
 
                 let mesh_z = mesh2d_transforms.transform.translation.z;
                 transparent_phase.add(Transparent2d {
