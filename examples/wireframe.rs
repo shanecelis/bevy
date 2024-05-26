@@ -1,5 +1,5 @@
 use bevy::ecs::system::{
-    lifetimeless::{SRes, SResMut},
+    lifetimeless::{SRes, SResMut, Read},
     SystemParamItem,
 };
 use bevy::render::{
@@ -141,31 +141,24 @@ impl SpecializedRenderPipeline for WireframeMesh2dPipeline {
     }
 }
 
-pub struct WireframeMesh2dInstance {
-    pub render_instance: RenderMesh2dInstance,
-    pub dist_buffer: Option<Buffer>,
-}
-
 pub struct WireframeDrawMesh2d;
 impl<P: PhaseItem> RenderCommand<P> for WireframeDrawMesh2d {
     type Param = (SRes<RenderAssets<GpuMesh>>, SRes<WireframeMesh2dInstances>);
     type ViewQuery = ();
-    type ItemQuery = ();
+    type ItemQuery = Read<DistBuffer>;
 
     #[inline]
     fn render<'w>(
         item: &P,
         _view: (),
-        _item_query: Option<()>,
+        dist_buffer: Option<&'w DistBuffer>,
         (meshes, wireframe_mesh2d_instances): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let meshes = meshes.into_inner();
         let wireframe_mesh2d_instances = wireframe_mesh2d_instances.into_inner();
 
-        let Some(WireframeMesh2dInstance {
-            render_instance: RenderMesh2dInstance { mesh_asset_id, .. },
-            dist_buffer,
+        let Some(RenderMesh2dInstance { mesh_asset_id,
             ..
         }) = wireframe_mesh2d_instances.get(&item.entity())
         else {
@@ -176,9 +169,13 @@ impl<P: PhaseItem> RenderCommand<P> for WireframeDrawMesh2d {
             warn!("no mesh");
             return RenderCommandResult::Failure;
         };
+        let Some(dist_buffer) = dist_buffer else {
+            warn!("no dist");
+            return RenderCommandResult::Failure;
+        };
 
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, dist_buffer.as_ref().unwrap().slice(..));
+        pass.set_vertex_buffer(1, dist_buffer.buffer.slice(..));
 
         let batch_range = item.batch_range();
         match &gpu_mesh.buffer_info {
@@ -275,7 +272,7 @@ pub const WIREFRAME_MESH2D_SHADER_HANDLE: Handle<Shader> =
 
 /// Our custom pipeline needs its own instance storage
 #[derive(Resource, Deref, DerefMut, Default)]
-pub struct WireframeMesh2dInstances(EntityHashMap<Entity, WireframeMesh2dInstance>);
+pub struct WireframeMesh2dInstances(EntityHashMap<Entity, RenderMesh2dInstance>);
 
 impl Plugin for WireframeMesh2dPlugin {
     fn build(&self, app: &mut App) {
@@ -300,7 +297,10 @@ impl Plugin for WireframeMesh2dPlugin {
             )
             .add_systems(
                 Render,
-                prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
+                (
+                    prepare_dist_buffers.in_set(RenderSet::PrepareResources),
+                    prepare_bind_group.in_set(RenderSet::PrepareBindGroups),
+                )
             )
             .add_systems(
                 Render,
@@ -342,20 +342,17 @@ pub fn extract_wireframe_mesh2d(
             flags: MeshFlags::empty().bits(),
         };
 
-        values.push((entity, WireframeMesh2d));
+        values.push((entity, (handle.clone(), WireframeMesh2d)));
 
         let mesh_asset_id = handle.0.id();
         if !wireframe_mesh_instances.contains_key(&entity) {
             wireframe_mesh_instances.insert(
                 entity,
-                WireframeMesh2dInstance {
-                    render_instance: RenderMesh2dInstance {
-                        mesh_asset_id,
-                        transforms,
-                        material_bind_group_id: Material2dBindGroupId::default(),
-                        automatic_batching: false,
-                    },
-                    dist_buffer: None,
+                RenderMesh2dInstance {
+                    mesh_asset_id,
+                    transforms,
+                    material_bind_group_id: Material2dBindGroupId::default(),
+                    automatic_batching: false,
                 },
             );
         }
@@ -394,8 +391,7 @@ pub fn queue_wireframe_mesh2d(
 
         // Queue all entities visible to that view
         for visible_entity in visible_entities.iter::<WithMesh2d>() {
-            if let Some(wireframe_instance) = wireframe_mesh_instances.get(visible_entity) {
-                let mesh_instance = &wireframe_instance.render_instance;
+            if let Some(mesh_instance) = wireframe_mesh_instances.get(visible_entity) {
                 let mesh2d_handle = mesh_instance.mesh_asset_id;
                 let mesh2d_transforms = &mesh_instance.transforms;
                 // Get our specialized pipeline
@@ -440,18 +436,49 @@ struct WireframeBinding {
     vertex_count: usize,
 }
 
+#[derive(Component)]
+pub struct DistBuffer {
+    buffer: Buffer,
+    vertex_count: usize,
+}
+
+fn prepare_dist_buffers(
+    mut commands: Commands,
+    meshes: Res<RenderAssets<GpuMesh>>,
+    query: Query<(Entity, &Mesh2dHandle)>,
+    render_device: Res<RenderDevice>,
+) {
+    for (entity, handle) in &query {
+
+        let mesh_asset_id = handle.0.id();
+        let Some(gpu_mesh) = meshes.get(mesh_asset_id) else {
+            warn!("no gpu mesh");
+            continue;
+        };
+        let vertex_count = gpu_mesh.vertex_count;
+        let buffer = render_device.create_buffer(&BufferDescriptor {
+                label: Some("dist_buffer"),
+                size: (vertex_count * 4 * 4) as u64,
+                usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
+                mapped_at_creation: false,
+            });
+        commands.entity(entity).insert(DistBuffer {
+            buffer,
+            vertex_count: vertex_count as usize,
+        });
+    }
+}
+
 fn prepare_bind_group(
     mut commands: Commands,
     pipeline: Res<ScreenspaceDistPipeline>,
     render_device: Res<RenderDevice>,
     pos_buffers: Res<RenderAssets<PosBuffer>>,
-    wireframe_mesh: Query<Entity, With<WireframeMesh2d>>,
+    wireframe_mesh: Query<(Entity, &DistBuffer), With<WireframeMesh2d>>,
     mut wireframe_mesh_instances: ResMut<WireframeMesh2dInstances>,
 ) {
-    for entity in wireframe_mesh.iter() {
-        let Some(WireframeMesh2dInstance {
-            dist_buffer,
-            render_instance: RenderMesh2dInstance { mesh_asset_id, .. },
+    for (entity, dist_buffer) in wireframe_mesh.iter() {
+        let Some(RenderMesh2dInstance { mesh_asset_id,
             ..
         }) = wireframe_mesh_instances.get_mut(&entity)
         else {
@@ -462,24 +489,12 @@ fn prepare_bind_group(
             warn!("no pos buffer");
             return;
         };
-        if dist_buffer.is_none() {
-            info!(
-                "make dist buffer with vertex count {}",
-                pos_buffer.vertex_count
-            );
-            *dist_buffer = Some(render_device.create_buffer(&BufferDescriptor {
-                label: Some("dist_buffer"),
-                size: (pos_buffer.vertex_count * 4 * 4) as u64,
-                usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
-                mapped_at_creation: false,
-            }))
-        }
         let bind_group = render_device.create_bind_group(
             None,
             &pipeline.layout,
             &BindGroupEntries::sequential((
                 pos_buffer.buffer.as_entire_buffer_binding(),
-                dist_buffer.as_ref().unwrap().as_entire_buffer_binding(),
+                dist_buffer.buffer.as_entire_buffer_binding(),
             )),
         );
         let vertex_count = pos_buffer.vertex_count;
