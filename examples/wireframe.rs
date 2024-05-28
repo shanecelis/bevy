@@ -16,7 +16,7 @@ use bevy::{
         mesh::{GpuMesh, Indices, MeshVertexAttribute, VertexAttributeValues},
         render_asset::{PrepareAssetError, RenderAssetUsages, RenderAssets},
         render_asset::{RenderAsset, RenderAssetPlugin},
-        render_graph::{self, RenderGraph, RenderLabel},
+        render_graph::{self, RenderGraph, RenderLabel, SlotInfo, SlotType},
         render_phase::{
             AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
             SetItemPipeline, SortedRenderPhase,
@@ -421,6 +421,7 @@ struct ScreenSpaceDistLabel;
 struct WireframeBinding {
     bind_group: BindGroup,
     vertex_count: usize,
+    dist_buffer: Buffer,
 }
 
 #[derive(Component)]
@@ -443,7 +444,7 @@ fn prepare_dist_buffers(
         };
         let vertex_count = gpu_mesh.vertex_count as usize;
         let buffer = render_device.create_buffer(&BufferDescriptor {
-                label: Some("dist_buffer"),
+                label: Some("dist"),
                 size: (std::mem::size_of::<Vec4>() * vertex_count) as u64,
                 usage: BufferUsages::STORAGE | BufferUsages::VERTEX,
                 mapped_at_creation: false,
@@ -486,6 +487,7 @@ fn prepare_bind_group(
         commands.entity(entity).insert(WireframeBinding {
             bind_group,
             vertex_count,
+            dist_buffer: dist_buffer.buffer.clone(),
         });
     }
 }
@@ -586,9 +588,13 @@ impl render_graph::Node for ScreenspaceDistNode {
         self.query.update_archetypes(world);
     }
 
+    fn output(&self) -> Vec<SlotInfo> {
+        vec![SlotInfo::new("dist", SlotType::Buffer)]
+    }
+
     fn run(
         &self,
-        _graph: &mut render_graph::RenderGraphContext,
+        graph: &mut render_graph::RenderGraphContext,
         render_context: &mut RenderContext,
         world: &World,
     ) -> Result<(), render_graph::NodeRunError> {
@@ -607,8 +613,8 @@ impl render_graph::Node for ScreenspaceDistNode {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.set_pipeline(update_pipeline);
             pass.dispatch_workgroups((wireframe_binding.vertex_count / 3) as u32, 1, 1);
+            graph.set_output("dist", wireframe_binding.dist_buffer.clone())?;
         }
-
         Ok(())
     }
 }

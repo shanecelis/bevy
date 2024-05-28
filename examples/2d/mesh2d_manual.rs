@@ -180,8 +180,8 @@ fn star(
     commands.spawn((
         WireframeMesh2d,
         handle,
-        SpatialBundle::INHERITED_IDENTITY,
-        // SpatialBundle::from_transform(Transform::from_xyz(-300.0, -100.0, 2.0))
+        // SpatialBundle::INHERITED_IDENTITY,
+        SpatialBundle::from_transform(Transform::from_xyz(-300.0, -100.0, 2.0))
     ));
 
     // Spawn the camera
