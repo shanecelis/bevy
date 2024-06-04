@@ -133,19 +133,19 @@ pub trait Material2d: AsBindGroup + Asset + Clone + Sized {
     }
 }
 
-pub type Material2dPlugin<M> = Material2dDrawPlugin<M, DrawMaterial2d<M>>;
+pub type Material2dPlugin<M> = Material2dGenericPlugin<M, DrawMaterial2d<M>, Material2dPipeline<M>>;
 
 /// Adds the necessary ECS resources and render logic to enable rendering entities using the given [`Material2d`]
 /// asset type (which includes [`Material2d`] types).
-pub struct Material2dDrawPlugin<M: Material2d, D: RenderCommand<Transparent2d>>(PhantomData<M>, PhantomData<D>);
+pub struct Material2dGenericPlugin<M: Material2d, D: RenderCommand<Transparent2d>, P: SpecializedMeshPipeline>(PhantomData<M>, PhantomData<D>, PhantomData<P>);
 
-impl<M: Material2d, D: RenderCommand<Transparent2d>> Default for Material2dDrawPlugin<M, D> {
+impl<M: Material2d, D: RenderCommand<Transparent2d>, P: SpecializedMeshPipeline<Key = Material2dKey<M>> + Resource + Clone + FromWorld + Sync + Send + 'static> Default for Material2dGenericPlugin<M, D, P> {
     fn default() -> Self {
-        Self(Default::default(), Default::default())
+        Self(Default::default(), Default::default(), Default::default())
     }
 }
 
-impl<M: Material2d, D: RenderCommand<Transparent2d> + Sync + Send + 'static> Plugin for Material2dDrawPlugin<M, D>
+impl<M: Material2d, D: RenderCommand<Transparent2d> + Sync + Send + 'static, P: SpecializedMeshPipeline<Key = Material2dKey<M>> + Resource + Clone + FromWorld + Sync + Send + 'static> Plugin for Material2dGenericPlugin<M, D, P>
 where
     M::Data: PartialEq + Eq + Hash + Clone,
     D::Param: ReadOnlySystemParam
@@ -158,20 +158,21 @@ where
             render_app
                 .add_render_command::<Transparent2d, D>()
                 .init_resource::<RenderMaterial2dInstances<M>>()
-                .init_resource::<SpecializedMeshPipelines<Material2dPipeline<M>>>()
+                .init_resource::<SpecializedMeshPipelines<P>>()
                 .add_systems(ExtractSchedule, extract_material_meshes_2d::<M>)
                 .add_systems(
                     Render,
-                    queue_material2d_meshes::<M, D>
+                    queue_material2d_meshes::<M, D, P>
                         .in_set(RenderSet::QueueMeshes)
                         .after(prepare_assets::<PreparedMaterial2d<M>>),
-                );
+                )
+                ;
         }
     }
 
     fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.init_resource::<Material2dPipeline<M>>();
+            render_app.init_resource::<P>();
         }
     }
 }
@@ -367,10 +368,10 @@ pub const fn tonemapping_pipeline_key(tonemapping: Tonemapping) -> Mesh2dPipelin
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn queue_material2d_meshes<M: Material2d, D: RenderCommand<Transparent2d> + Sync + Send + 'static>(
+pub fn queue_material2d_meshes<M: Material2d, D: RenderCommand<Transparent2d> + Sync + Send + 'static, P: SpecializedMeshPipeline<Key = Material2dKey<M>> + Resource + Sync + Send + 'static>(
     transparent_draw_functions: Res<DrawFunctions<Transparent2d>>,
-    material2d_pipeline: Res<Material2dPipeline<M>>,
-    mut pipelines: ResMut<SpecializedMeshPipelines<Material2dPipeline<M>>>,
+    material2d_pipeline: Res<P>,
+    mut pipelines: ResMut<SpecializedMeshPipelines<P>>,
     pipeline_cache: Res<PipelineCache>,
     msaa: Res<Msaa>,
     render_meshes: Res<RenderAssets<GpuMesh>>,
@@ -387,6 +388,7 @@ pub fn queue_material2d_meshes<M: Material2d, D: RenderCommand<Transparent2d> + 
     )>,
 ) where
     M::Data: PartialEq + Eq + Hash + Clone,
+    // P::Key: Sync + Send + 'static,
 {
     if render_material_instances.is_empty() {
         return;
@@ -497,6 +499,7 @@ impl<M: Material2d> RenderAsset for PreparedMaterial2d<M> {
         (render_device, images, fallback_image, pipeline): &mut SystemParamItem<Self::Param>,
     ) -> Result<Self, bevy_render::render_asset::PrepareAssetError<Self::SourceAsset>> {
         match material.as_bind_group(
+            /// XXX: This needs to be genericized too.
             &pipeline.material2d_layout,
             render_device,
             images,

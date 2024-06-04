@@ -27,7 +27,7 @@ use bevy_render::{
     view::{ExtractedView, Msaa, RenderLayers, ViewTarget},
     Render, RenderApp, RenderSet,
 };
-use bevy_sprite::{Mesh2dPipeline, Mesh2dPipelineKey, SetMesh2dViewBindGroup, DrawMaterial2d};
+use bevy_sprite::{Mesh2dPipeline, Mesh2dPipelineKey, SetMesh2dViewBindGroup, DrawMaterial2d, Material2dPipeline};
 use bevy_utils::tracing::error;
 
 pub struct LineGizmo2dPlugin;
@@ -49,7 +49,7 @@ impl Plugin for LineGizmo2dPlugin {
                     .in_set(RenderSet::Queue)
                     .ambiguous_with(bevy_sprite::queue_sprites)
                     .ambiguous_with(
-                        bevy_sprite::queue_material2d_meshes::<bevy_sprite::ColorMaterial, DrawMaterial2d<bevy_sprite::ColorMaterial>>,
+                        bevy_sprite::queue_material2d_meshes::<bevy_sprite::ColorMaterial, DrawMaterial2d<bevy_sprite::ColorMaterial>, Material2dPipeline<bevy_sprite::ColorMaterial>>,
                     ),
             )
             .add_systems(

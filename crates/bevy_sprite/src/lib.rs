@@ -153,7 +153,7 @@ impl Plugin for SpritePlugin {
                     (
                         queue_sprites
                             .in_set(RenderSet::Queue)
-                            .ambiguous_with(queue_material2d_meshes::<ColorMaterial, DrawMaterial2d<ColorMaterial>>),
+                            .ambiguous_with(queue_material2d_meshes::<ColorMaterial, DrawMaterial2d<ColorMaterial>, Material2dPipeline<ColorMaterial>>),
                         prepare_sprite_image_bind_groups.in_set(RenderSet::PrepareBindGroups),
                         prepare_sprite_view_bind_groups.in_set(RenderSet::PrepareBindGroups),
                     ),
