@@ -8,7 +8,7 @@ use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::entity::EntityHashMap;
 use bevy_ecs::{
     prelude::*,
-    system::{lifetimeless::SRes, SystemParamItem},
+    system::{lifetimeless::SRes, SystemParamItem, ReadOnlySystemParam},
 };
 use bevy_math::FloatOrd;
 use bevy_render::{
@@ -133,19 +133,22 @@ pub trait Material2d: AsBindGroup + Asset + Clone + Sized {
     }
 }
 
+pub type Material2dPlugin<M> = Material2dDrawPlugin<M, DrawMaterial2d<M>>;
+
 /// Adds the necessary ECS resources and render logic to enable rendering entities using the given [`Material2d`]
 /// asset type (which includes [`Material2d`] types).
-pub struct Material2dPlugin<M: Material2d>(PhantomData<M>);
+pub struct Material2dDrawPlugin<M: Material2d, D: RenderCommand<Transparent2d>>(PhantomData<M>, PhantomData<D>);
 
-impl<M: Material2d> Default for Material2dPlugin<M> {
+impl<M: Material2d, D: RenderCommand<Transparent2d>> Default for Material2dDrawPlugin<M, D> {
     fn default() -> Self {
-        Self(Default::default())
+        Self(Default::default(), Default::default())
     }
 }
 
-impl<M: Material2d> Plugin for Material2dPlugin<M>
+impl<M: Material2d, D: RenderCommand<Transparent2d> + Sync + Send + 'static> Plugin for Material2dDrawPlugin<M, D>
 where
     M::Data: PartialEq + Eq + Hash + Clone,
+    D::Param: ReadOnlySystemParam
 {
     fn build(&self, app: &mut App) {
         app.init_asset::<M>()
@@ -153,13 +156,13 @@ where
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
-                .add_render_command::<Transparent2d, DrawMaterial2d<M>>()
+                .add_render_command::<Transparent2d, D>()
                 .init_resource::<RenderMaterial2dInstances<M>>()
                 .init_resource::<SpecializedMeshPipelines<Material2dPipeline<M>>>()
                 .add_systems(ExtractSchedule, extract_material_meshes_2d::<M>)
                 .add_systems(
                     Render,
-                    queue_material2d_meshes::<M>
+                    queue_material2d_meshes::<M, D>
                         .in_set(RenderSet::QueueMeshes)
                         .after(prepare_assets::<PreparedMaterial2d<M>>),
                 );
@@ -308,7 +311,7 @@ impl<M: Material2d> FromWorld for Material2dPipeline<M> {
     }
 }
 
-type DrawMaterial2d<M> = (
+pub type DrawMaterial2d<M> = (
     SetItemPipeline,
     SetMesh2dViewBindGroup<0>,
     SetMesh2dBindGroup<1>,
@@ -364,7 +367,7 @@ pub const fn tonemapping_pipeline_key(tonemapping: Tonemapping) -> Mesh2dPipelin
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn queue_material2d_meshes<M: Material2d>(
+pub fn queue_material2d_meshes<M: Material2d, D: RenderCommand<Transparent2d> + Sync + Send + 'static>(
     transparent_draw_functions: Res<DrawFunctions<Transparent2d>>,
     material2d_pipeline: Res<Material2dPipeline<M>>,
     mut pipelines: ResMut<SpecializedMeshPipelines<Material2dPipeline<M>>>,
@@ -394,7 +397,7 @@ pub fn queue_material2d_meshes<M: Material2d>(
             continue;
         };
 
-        let draw_transparent_2d = transparent_draw_functions.read().id::<DrawMaterial2d<M>>();
+        let draw_transparent_2d = transparent_draw_functions.read().id::<D>();
 
         let mut view_key = Mesh2dPipelineKey::from_msaa_samples(msaa.samples())
             | Mesh2dPipelineKey::from_hdr(view.hdr);
