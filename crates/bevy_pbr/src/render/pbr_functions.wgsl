@@ -307,6 +307,7 @@ fn apply_pbr_lighting(
 
     let diffuse_occlusion = in.diffuse_occlusion;
     let specular_occlusion = in.specular_occlusion;
+    let attenuation = in.attenuation;
 
     // Neubelt and Pettineo 2013, "Crafting a Next-gen Material Pipeline for The Order: 1886"
     let NdotV = max(dot(in.N, in.V), 0.0001);
@@ -453,6 +454,7 @@ fn apply_pbr_lighting(
 
         let light_contrib = lighting::spot_light(light_id, &lighting_input);
         direct_light += light_contrib * shadow;
+
 
 #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
         // NOTE: We use the diffuse transmissive color, the second Lambertian lobe's calculated
@@ -694,7 +696,7 @@ fn apply_pbr_lighting(
 
     // Total light
     output_color = vec4<f32>(
-        (view_bindings::view.exposure * (transmitted_light + direct_light + indirect_light)) + emissive_light,
+        ((view_bindings::view.exposure * (transmitted_light + direct_light + indirect_light)) + emissive_light) * attenuation,
         output_color.a
     );
 

@@ -118,6 +118,7 @@ struct PbrInput {
     anisotropy_T: vec3<f32>,
     anisotropy_B: vec3<f32>,
     is_orthographic: bool,
+    attenuation: vec3<f32>,
     flags: u32,
 };
 
@@ -144,6 +145,7 @@ fn pbr_input_new() -> PbrInput {
     pbr_input.anisotropy_B = vec3<f32>(0.0);
 
     pbr_input.lightmap_light = vec3<f32>(0.0);
+    pbr_input.attenuation = vec3<f32>(1.0);
 
     pbr_input.flags = 0u;
 
