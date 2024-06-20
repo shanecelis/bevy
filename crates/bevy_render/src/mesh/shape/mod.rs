@@ -254,6 +254,7 @@ impl From<Plane> for Mesh {
 
         let mut positions: Vec<[f32; 3]> = Vec::with_capacity(num_vertices);
         let mut normals: Vec<[f32; 3]> = Vec::with_capacity(num_vertices);
+        let mut tangents: Vec<[f32; 4]> = Vec::with_capacity(num_vertices);
         let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(num_vertices);
         let mut indices: Vec<u32> = Vec::with_capacity(num_indices);
 
@@ -263,6 +264,7 @@ impl From<Plane> for Mesh {
                 let tz = z as f32 / (z_vertex_count - 1) as f32;
                 positions.push([(-0.5 + tx) * plane.size, 0.0, (-0.5 + tz) * plane.size]);
                 normals.push(up);
+                tangents.push(Vec4::X.to_array());
                 uvs.push([tx, tz]);
             }
         }
@@ -286,6 +288,7 @@ impl From<Plane> for Mesh {
         .with_inserted_indices(Indices::U32(indices))
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
     }
 }
