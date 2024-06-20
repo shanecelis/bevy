@@ -16,6 +16,10 @@ fn sample_depth_map(uv: vec2<f32>) -> f32 {
     return textureSampleLevel(depth_map_texture, depth_map_sampler, uv, 0.0).r;
 }
 
+// Given a UV coordinate, calculate the intersection between the camera vector
+// Vt and the surface defined by the heightmap. This intersection is a new UV
+// coordinate that is returned.
+//
 // An implementation of parallax mapping, see https://en.wikipedia.org/wiki/Parallax_mapping
 // Code derived from: https://web.archive.org/web/20150419215321/http://sunandblackcat.com/tipFullView.php?l=eng&topicid=28
 fn parallaxed_uv(
