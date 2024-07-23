@@ -19,6 +19,8 @@ smallvec = ["dep:smallvec"]
 uuid = ["dep:uuid"]
 # When enabled, allows documentation comments to be accessed via reflection
 documentation = ["bevy_reflect_derive/documentation"]
+# Enables function reflection
+functions = ["bevy_reflect_derive/functions"]
 
 [dependencies]
 # bevy
@@ -55,5 +57,5 @@ required-features = ["documentation"]
 workspace = true
 
 [package.metadata.docs.rs]
-rustdoc-args = ["-Zunstable-options", "--cfg", "docsrs"]
+rustdoc-args = ["-Zunstable-options"]
 all-features = true
