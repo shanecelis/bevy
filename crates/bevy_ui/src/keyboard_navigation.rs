@@ -14,6 +14,64 @@ pub struct Focusable {
     focus_state: FocusState,
 }
 
+enum FocusElement {
+  Visible,
+  Invisible,
+  None,
+}
+
+impl FocusElement {
+    fn is_focus(&self) -> bool {
+        matches!(self, FocusElement::Visible | FocusElement::Invisible)
+    }
+
+    fn is_visible(&self) -> bool {
+        matches!(self, FocusElement::Visible)
+    }
+}
+
+pub trait Focused {
+    fn focus_state(&self, id: Entity) -> FocusElement;
+
+    fn is_focus_visible(&self, id: Entity) -> bool {
+        matches!(self.focus_state(id), FocusElement::Visible)
+    }
+
+    fn is_focus(&self, id: Entity) -> bool {
+        matches!(self.focus_state(id), FocusElement::Visible | FocusElement::Invisible)
+    }
+}
+
+impl Focused for Option<Res<'_, Focus>> {
+    fn focus_state(&self, id: Entity) -> FocusElement {
+        self.as_ref()
+            .map(|res| res.focus_state(id))
+            .unwrap_or(FocusElement::None)
+    }
+}
+
+impl Focused for Option<Focus> {
+    fn focus_state(&self, id: Entity) -> FocusElement {
+        self.as_ref()
+            .map(|res| res.focus_state(id))
+            .unwrap_or(FocusElement::None)
+    }
+}
+
+impl Focused for Focus {
+    fn focus_state(&self, id: Entity) -> FocusElement {
+        if self.entity == Some(id) {
+            if self.focus_visible {
+                FocusElement::Visible
+            } else {
+                FocusElement::Invisible
+            }
+        } else {
+            FocusElement::None
+        }
+    }
+}
+
 impl Focusable {
     /// The entity is currently focused, similar to the `:focus` css pseudo-class.
     /// To check if the focus has been achieved through keyboard navigation, see [`Focusable::is_focus_visible`].
@@ -137,8 +195,29 @@ fn set_focus_state(
 }
 
 /// Modify the [`FocusState`] of the [`Focusable`] component, based on the [`Focus`] resource.
+// pub(crate) fn update_focused_state(
+//     mut focusable: Query<&mut Focusable>,
+//     focus: Res<Focus>,
+//     mut old_focused_entity: Local<Option<Entity>>,
+// ) {
+//     let new_focused_entity = focus.entity;
+
+//     // Remove the interaction from the last focused entity
+//     if *old_focused_entity != new_focused_entity {
+//         set_focus_state(*old_focused_entity, &mut focusable, FocusState::None);
+//     }
+
+//     let new_state = FocusState::Focused {
+//         visible: focus.focus_visible,
+//     };
+//     // Set the focused interaction on the newly focused entity
+//     set_focus_state(new_focused_entity, &mut focusable, new_state);
+
+//     *old_focused_entity = new_focused_entity;
+// }
+
 pub(crate) fn update_focused_state(
-    mut focusable: Query<&mut Focusable>,
+    mut query: Query<&mut Interaction>,
     focus: Res<Focus>,
     mut old_focused_entity: Local<Option<Entity>>,
 ) {
@@ -146,14 +225,22 @@ pub(crate) fn update_focused_state(
 
     // Remove the interaction from the last focused entity
     if *old_focused_entity != new_focused_entity {
-        set_focus_state(*old_focused_entity, &mut focusable, FocusState::None);
+        if let Some(old) = *old_focused_entity {
+            if let Ok(mut interaction) = query.get_mut(old) {
+                interaction.set_changed();
+            }
+        }
+        // set_focus_state(*old_focused_entity, &mut focusable, FocusState::None);
     }
 
-    let new_state = FocusState::Focused {
-        visible: focus.focus_visible,
-    };
+    if let Some(new) = new_focused_entity {
+        if let Ok(mut interaction) = query.get_mut(new) {
+            interaction.set_changed();
+        }
+    }
+
     // Set the focused interaction on the newly focused entity
-    set_focus_state(new_focused_entity, &mut focusable, new_state);
+    // set_focus_state(new_focused_entity, &mut focusable, new_state);
 
     *old_focused_entity = new_focused_entity;
 }
