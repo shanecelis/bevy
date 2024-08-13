@@ -146,6 +146,38 @@ impl<'a> Iterator for PixelIter<'a> {
     }
 }
 
+pub enum PixelLoc {
+    Linear { index: usize },
+    Cartesian { x: usize, y: usize }
+}
+
+impl PixelLoc {
+    fn index(&self, extent: &Extent3d) -> Option<usize> {
+        match self {
+            Self::PixelLoc { index } => (index < (extent.width * extent.height) as usize).then_some(index),
+            Self::Cartesian { x, y } => (x < extent.width as usize && y < extent.height as usize).then_some(y * extent.width as usize + x)
+        }
+    }
+}
+
+impl From<usize> for PixelLoc {
+    fn from(index: usize) -> Self {
+        Self::Linear { index }
+    }
+}
+
+impl From<(usize, usize)> for PixelLoc {
+    fn from((x, y): (usize, usize)) -> Self {
+        Self::Cartesian { x, y }
+    }
+}
+
+impl From<UVec2> for PixelLoc {
+    fn from(v: UVec2) -> Self {
+        Self::Cartesian { x: v.x as usize, y: v.y as usize }
+    }
+}
+
 impl Image {
 
     pub fn pixels<R: RangeBounds<usize>>(&self, range: R) -> Result<PixelIter, PixelError> {
@@ -242,18 +274,15 @@ impl Image {
         }
     }
 
-    pub fn get_pixel(&self, location: UVec2) -> Result<Color, PixelError> {
+    pub fn get_pixel(&self, location: impl Into<PixelLoc>) -> Result<Color, PixelError> {
         use TextureFormat::*;
         // TextureFormatPixelInfo
         // texture::DataFormat
         let image_size: Extent3d = self.texture_descriptor.size;
-        if location.x >= image_size.width || location.y >= image_size.height {
-            return Err(PixelError::InvalidLocation);
-        }
         let format = self.texture_descriptor.format;
         let components = format.components() as usize;
         let pixel_size = format.pixel_size() as usize;
-        let start = (location.x + location.y * image_size.width) as usize * components;
+        let start = location.into().index(&image_size).ok_or(PixelError::InvalidLocation)?;
         match format {
             Rgba32Float => {
                 let floats = align_to::<u8, f32>(&self.data)?;
