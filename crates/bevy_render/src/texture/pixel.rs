@@ -50,59 +50,6 @@ fn align_to_mut<T, U>(slice: &mut [T]) -> Result<&mut [U], PixelError> {
     }
 }
 
-// #[derive(Debug)]
-// pub struct PixelIterMut<'a> {
-//     image: &'a mut Image,
-//     index: usize,
-//     end: usize,
-//     color: Option<Color>,
-// }
-
-// impl<'a> Iterator for PixelIterMut<'a> {
-//     type Item = &mut Color;
-//     fn next(&mut self) -> Option<Self::Item> {
-//         use TextureFormat::*;
-//         if self.index >= self.end {
-//             None
-//         } else {
-//             let format = self.image.texture_descriptor.format;
-//             let components = format.components() as usize;
-//             let prev = self.index.saturating_sub(1) * components;
-//             let start = self.index * components;
-//             self.index += 1;
-//             match format {
-//                 Rgba32Float => {
-//                     let floats = align_to_mut::<u8, f32>(&mut self.image.data).ok()?;
-//                     let mut a = [0.0f32; 4];
-//                     if let Some(color) = self.color.take() {
-//                         let c: LinearRgba = color.into();
-//                         let a = c.to_f32_array();
-//                         floats[prev..prev + components].copy_from_slice(&a);
-//                     }
-//                     a.copy_from_slice(&floats[start..start + components]);
-//                     self.color = Some(LinearRgba::from_f32_array(a).into());
-//                     self.color.as_mut()
-//                 }
-//                 Rgba8Unorm => {
-//                     let mut a = [0u8; 4];
-//                     a.copy_from_slice(&self.image.data[start..start + components]);
-//                     self.color = Some(LinearRgba::from_u8_array(a).into());
-//                     self.color.as_mut()
-//                 },
-//                 Rgba8UnormSrgb => {
-//                     let mut a = [0u8; 4];
-//                     a.copy_from_slice(&self.image.data[start..start + components]);
-//                     self.color = Some(Srgba::from_u8_array(a).into());
-//                     self.color.as_mut()
-//                 },
-//                 _ => {
-//                     None
-//                 }
-//             }
-//         }
-//     }
-// }
-
 #[derive(Debug)]
 pub struct PixelIter<'a> {
     image: &'a Image,
@@ -154,8 +101,8 @@ pub enum PixelLoc {
 impl PixelLoc {
     fn index(&self, extent: &Extent3d) -> Option<usize> {
         match self {
-            Self::PixelLoc { index } => (index < (extent.width * extent.height) as usize).then_some(index),
-            Self::Cartesian { x, y } => (x < extent.width as usize && y < extent.height as usize).then_some(y * extent.width as usize + x)
+            Self::Linear { index } => (*index < (extent.width * extent.height) as usize).then_some(*index),
+            Self::Cartesian { x, y } => (*x < extent.width as usize && *y < extent.height as usize).then_some(y * extent.width as usize + x)
         }
     }
 }
@@ -181,6 +128,21 @@ impl From<UVec2> for PixelLoc {
 impl Image {
 
     pub fn pixels<R: RangeBounds<usize>>(&self, range: R) -> Result<PixelIter, PixelError> {
+        let index = match range.start_bound() {
+            Bound::Unbounded => 0,
+            Bound::Included(i) => *i,
+            Bound::Excluded(j) => j + 1
+        };
+
+        let end = match range.end_bound() {
+            Bound::Unbounded => None,
+            Bound::Included(i) => Some(i + 1),
+            Bound::Excluded(j) => Some(*j)
+        };
+        self._pixels(index, end)
+    }
+
+    fn _pixels(&self, index: usize, end: Option<usize>) -> Result<PixelIter, PixelError> {
         use TextureFormat::*;
         let format = self.texture_descriptor.format;
         let components = format.components() as usize;
@@ -207,17 +169,7 @@ impl Image {
                 }
             }
         }.and_then(|max_length| {
-            let index = match range.start_bound() {
-                Bound::Unbounded => 0,
-                Bound::Included(i) => *i,
-                Bound::Excluded(j) => j + 1
-            };
-
-            let end = match range.end_bound() {
-                Bound::Unbounded => max_length,
-                Bound::Included(i) => i + 1,
-                Bound::Excluded(j) => *j
-            };
+            let end = end.unwrap_or(max_length);
             if index >= max_length || end > max_length {
                 Err(PixelError::InvalidRange)
             } else {
@@ -226,39 +178,70 @@ impl Image {
         })
     }
 
-    pub fn set_pixels(&mut self, mut start: usize, source: &[Color]) -> Result<(), PixelError>{
+    pub fn get_pixel(&self, location: impl Into<PixelLoc>) -> Result<Color, PixelError> {
+        self._get_pixel(location.into())
+    }
+
+    fn _get_pixel(&self, location: PixelLoc) -> Result<Color, PixelError> {
         use TextureFormat::*;
+        let image_size: Extent3d = self.texture_descriptor.size;
         let format = self.texture_descriptor.format;
         let components = format.components() as usize;
-        start *= components;
+        let pixel_size = format.pixel_size() as usize;
+        let start = location.index(&image_size).ok_or(PixelError::InvalidLocation)?;
         match format {
             Rgba32Float => {
-                let floats = align_to_mut::<u8, f32>(&mut self.data)?;
-                for color in source {
-                    let c: LinearRgba = (*color).into();
-                    let a = c.to_f32_array();
-                    floats[start..start + components].copy_from_slice(&a);
-                    start += components;
-                }
-                Ok(())
+                let floats = align_to::<u8, f32>(&self.data)?;
+                let mut a = [0.0f32; 4];
+                a.copy_from_slice(&floats[start..start + components]);
+                Ok(LinearRgba::from_f32_array(a).into())
             }
+            R8Unorm => {
+                let mut a: [u8; 4] = [0, 0, 0, u8::MAX];
+                a[0..1].copy_from_slice(&self.data[start..start + pixel_size]);
+                Ok(LinearRgba::from_u8_array(a).into())
+            },
+            R8Snorm => {
+                let signed = align_to::<u8, i8>(&self.data)?;
+                let mut a: [i8; 4] = [0, 0, 0, i8::MAX];
+                a[0..1].copy_from_slice(&signed[start..start + pixel_size]);
+                Ok(LinearRgba::new(
+                    a[0] as f32 / i8::MAX as f32,
+                    a[1] as f32 / i8::MAX as f32,
+                    a[2] as f32 / i8::MAX as f32,
+                    a[3] as f32 / i8::MAX as f32,
+                ).into())
+            },
+            R8Uint => {
+                let mut a: [u8; 4] = [0, 0, 0, u8::MAX];
+                a[0..1].copy_from_slice(&self.data[start..start + pixel_size]);
+                Ok(LinearRgba::new(
+                    a[0] as f32,
+                    a[1] as f32,
+                    a[2] as f32,
+                    a[3] as f32,
+                ).into())
+            },
+            R8Sint => {
+                let signed = align_to::<u8, i8>(&self.data)?;
+                let mut a: [i8; 4] = [0, 0, 0, 127];
+                a[0..1].copy_from_slice(&signed[start..start + pixel_size]);
+                Ok(LinearRgba::new(
+                    a[0] as f32,
+                    a[1] as f32,
+                    a[2] as f32,
+                    a[3] as f32,
+                ).into())
+            },
             Rgba8Unorm => {
-                for color in source {
-                    let c: LinearRgba = (*color).into();
-                    let a = c.to_u8_array();
-                    self.data[start..start + components].copy_from_slice(&a);
-                    start += components;
-                }
-                Ok(())
+                let mut a = [0u8; 4];
+                a.copy_from_slice(&self.data[start..start + pixel_size]);
+                Ok(LinearRgba::from_u8_array(a).into())
             },
             Rgba8UnormSrgb => {
-                for color in source {
-                    let c: Srgba = (*color).into();
-                    let a = c.to_u8_array();
-                    self.data[start..start + components].copy_from_slice(&a);
-                    start += components;
-                }
-                Ok(())
+                let mut a = [0u8; 4];
+                a.copy_from_slice(&self.data[start..start + pixel_size]);
+                Ok(Srgba::from_u8_array(a).into())
             },
             f => {
                 if f.is_compressed() {
@@ -274,31 +257,36 @@ impl Image {
         }
     }
 
-    pub fn get_pixel(&self, location: impl Into<PixelLoc>) -> Result<Color, PixelError> {
+    pub fn set_pixel(&mut self, location: impl Into<PixelLoc>, color: impl Into<Color>) -> Result<(), PixelError> {
+        self._set_pixel(location.into(), color.into())
+    }
+
+    fn _set_pixel(&mut self, location: PixelLoc, color: Color) -> Result<(), PixelError> {
         use TextureFormat::*;
-        // TextureFormatPixelInfo
-        // texture::DataFormat
         let image_size: Extent3d = self.texture_descriptor.size;
         let format = self.texture_descriptor.format;
         let components = format.components() as usize;
         let pixel_size = format.pixel_size() as usize;
-        let start = location.into().index(&image_size).ok_or(PixelError::InvalidLocation)?;
+        let start = location.index(&image_size).ok_or(PixelError::InvalidLocation)?;
         match format {
             Rgba32Float => {
-                let floats = align_to::<u8, f32>(&self.data)?;
-                let mut a = [0.0f32; 4];
-                a.copy_from_slice(&floats[start..start + components]);
-                Ok(LinearRgba::from_f32_array(a).into())
+                let floats = align_to_mut::<u8, f32>(&mut self.data)?;
+                let c: LinearRgba = color.into();
+                let a = c.to_f32_array();
+                floats[start..start + components].copy_from_slice(&a);
+                Ok(())
             }
             Rgba8Unorm => {
-                let mut a = [0u8; 4];
-                a.copy_from_slice(&self.data[start..start + pixel_size]);
-                Ok(LinearRgba::from_u8_array(a).into())
+                let c: LinearRgba = color.into();
+                let a = c.to_u8_array();
+                self.data[start..start + components].copy_from_slice(&a);
+                Ok(())
             },
             Rgba8UnormSrgb => {
-                let mut a = [0u8; 4];
-                a.copy_from_slice(&self.data[start..start + pixel_size]);
-                Ok(Srgba::from_u8_array(a).into())
+                let c: Srgba = color.into();
+                let a = c.to_u8_array();
+                self.data[start..start + components].copy_from_slice(&a);
+                Ok(())
             },
             f => {
                 if f.is_compressed() {
@@ -324,6 +312,13 @@ mod test {
         let format = TextureFormat::Rgba8Unorm;
         assert_eq!(format.pixel_size(), 4);
         assert_eq!(format.components(), 4);
+    }
+
+    #[test]
+    fn test_r8unorm_size() {
+        let format = TextureFormat::R8Unorm;
+        assert_eq!(format.pixel_size(), 1);
+        assert_eq!(format.components(), 1);
     }
 
     #[test]
@@ -409,5 +404,28 @@ mod test {
         assert_eq!(image.pixels(..=1).unwrap_err(), PixelError::InvalidRange);
         assert!(image.pixels(0..0).unwrap().next().is_none());
         assert!(image.pixels(0..1).unwrap().next().is_some());
+    }
+
+    fn get_rgba(image: &Image, loc: impl Into<PixelLoc>) -> LinearRgba {
+        LinearRgba::from(image.get_pixel(loc).unwrap())
+    }
+
+    #[test]
+    fn test_r8image() {
+        let pixel = [255u8];
+        // FIXME: Spooky. If the next line is removed, the following image_from() will fail.
+        // Must have to do with alignment.
+        let image = image_from(1, 1, TextureFormat::R8Unorm, &pixel).unwrap();
+        assert_eq!(image.get_pixel(0).unwrap(), LinearRgba::RED.into());
+
+        let image = image_from(1, 1, TextureFormat::R8Uint, &pixel).unwrap();
+        assert_eq!(get_rgba(&image, 0).red, u8::MAX as f32);
+
+        let pixel = [127i8];
+        let image = image_from(1, 1, TextureFormat::R8Snorm, &pixel).unwrap();
+        assert_eq!(image.get_pixel(0).unwrap(), LinearRgba::RED.into());
+
+        let image = image_from(1, 1, TextureFormat::R8Sint, &pixel).unwrap();
+        assert_eq!(get_rgba(&image, 0).red, i8::MAX as f32);
     }
 }
