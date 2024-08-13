@@ -1,17 +1,13 @@
-use core::ops::{Range, Bound, RangeBounds};
+//! get_pixel, set_pixel operations for Image
+//!
 use crate::{
     render_asset::RenderAssetUsages,
     render_resource::{TextureFormat, Extent3d, TextureDimension},
     texture::image::{Image, TextureFormatPixelInfo}
 };
+use bevy_color::{Color, ColorToComponents, ColorToPacked, LinearRgba, Srgba};
 use bevy_math::UVec2;
-use bevy_color::{
-    Color,
-    ColorToPacked,
-    ColorToComponents,
-    LinearRgba,
-    Srgba,
-};
+use core::ops::{Bound, RangeBounds};
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -22,14 +18,257 @@ pub enum PixelError {
     DepthNotSupported,
     #[error("pixel operations not supported for stencil images")]
     StencilNotSupported,
-    #[error("pixel operation needed more data")]
-    NotEnoughData,
     #[error("no such pixel location")]
     InvalidLocation,
     #[error("could not align pixel data")]
     AlignmentFailed,
     #[error("invalid range")]
     InvalidRange,
+    #[error("given image width cannot cleanly divide pixel count to determine image height")]
+    WidthNotDivisible
+}
+
+pub enum PixelLoc {
+    Linear { index: usize },
+    Cartesian { x: usize, y: usize },
+}
+
+impl PixelLoc {
+    fn index(&self, extent: &Extent3d) -> Option<usize> {
+        match self {
+            Self::Linear { index } => {
+                (*index < (extent.width * extent.height) as usize).then_some(*index)
+            }
+            Self::Cartesian { x, y } => (*x < extent.width as usize && *y < extent.height as usize)
+                .then_some(y * extent.width as usize + x),
+        }
+    }
+}
+
+impl From<usize> for PixelLoc {
+    fn from(index: usize) -> Self {
+        Self::Linear { index }
+    }
+}
+
+impl From<(usize, usize)> for PixelLoc {
+    fn from((x, y): (usize, usize)) -> Self {
+        Self::Cartesian { x, y }
+    }
+}
+
+impl From<UVec2> for PixelLoc {
+    fn from(v: UVec2) -> Self {
+        Self::Cartesian {
+            x: v.x as usize,
+            y: v.y as usize,
+        }
+    }
+}
+
+impl Image {
+
+    pub fn get_pixel(&self, location: impl Into<PixelLoc>) -> Result<Color, PixelError> {
+        self._get_pixel(location.into())
+    }
+
+    fn _get_pixel(&self, location: PixelLoc) -> Result<Color, PixelError> {
+        use TextureFormat::*;
+        let image_size: Extent3d = self.texture_descriptor.size;
+        let format = self.texture_descriptor.format;
+        let components = format.components() as usize;
+        let pixel_size = format.pixel_size() as usize;
+        let start = location
+            .index(&image_size)
+            .ok_or(PixelError::InvalidLocation)?;
+        match format {
+            Rgba32Float => {
+                let floats = align_to::<u8, f32>(&self.data)?;
+                let mut a = [0.0f32; 4];
+                a.copy_from_slice(&floats[start..start + components]);
+                Ok(LinearRgba::from_f32_array(a).into())
+            }
+            R8Unorm => {
+                let mut a: [u8; 4] = [0, 0, 0, u8::MAX];
+                a[0..1].copy_from_slice(&self.data[start..start + pixel_size]);
+                Ok(LinearRgba::from_u8_array(a).into())
+            }
+            R8Snorm => {
+                let signed = align_to::<u8, i8>(&self.data)?;
+                let mut a: [i8; 4] = [0, 0, 0, i8::MAX];
+                a[0..1].copy_from_slice(&signed[start..start + pixel_size]);
+                Ok(LinearRgba::new(
+                    a[0] as f32 / i8::MAX as f32,
+                    a[1] as f32 / i8::MAX as f32,
+                    a[2] as f32 / i8::MAX as f32,
+                    a[3] as f32 / i8::MAX as f32,
+                )
+                .into())
+            }
+            R8Uint => {
+                let mut a: [u8; 4] = [0, 0, 0, u8::MAX];
+                a[0..1].copy_from_slice(&self.data[start..start + pixel_size]);
+                Ok(LinearRgba::new(a[0] as f32, a[1] as f32, a[2] as f32, a[3] as f32).into())
+            }
+            R8Sint => {
+                let signed = align_to::<u8, i8>(&self.data)?;
+                let mut a: [i8; 4] = [0, 0, 0, 127];
+                a[0..1].copy_from_slice(&signed[start..start + pixel_size]);
+                Ok(LinearRgba::new(a[0] as f32, a[1] as f32, a[2] as f32, a[3] as f32).into())
+            }
+            Rgba8Unorm => {
+                let mut a = [0u8; 4];
+                a.copy_from_slice(&self.data[start..start + pixel_size]);
+                Ok(LinearRgba::from_u8_array(a).into())
+            }
+            Rgba8UnormSrgb => {
+                let mut a = [0u8; 4];
+                a.copy_from_slice(&self.data[start..start + pixel_size]);
+                Ok(Srgba::from_u8_array(a).into())
+            }
+            f => {
+                if f.is_compressed() {
+                    Err(PixelError::CompressionNotSupported)
+                } else if f.has_depth_aspect() {
+                    Err(PixelError::DepthNotSupported)
+                } else if f.has_stencil_aspect() {
+                    Err(PixelError::StencilNotSupported)
+                } else {
+                    todo!("Fix {f:?}");
+                }
+            }
+        }
+    }
+
+    pub fn set_pixel(
+        &mut self,
+        location: impl Into<PixelLoc>,
+        color: impl Into<Color>,
+    ) -> Result<(), PixelError> {
+        self._set_pixel(location.into(), color.into())
+    }
+
+    fn _set_pixel(&mut self, location: PixelLoc, color: Color) -> Result<(), PixelError> {
+        use TextureFormat::*;
+        let image_size: Extent3d = self.texture_descriptor.size;
+        let format = self.texture_descriptor.format;
+        let components = format.components() as usize;
+        let start = location
+            .index(&image_size)
+            .ok_or(PixelError::InvalidLocation)?;
+        match format {
+            Rgba32Float => {
+                let floats = align_to_mut::<u8, f32>(&mut self.data)?;
+                let c: LinearRgba = color.into();
+                let a = c.to_f32_array();
+                floats[start..start + components].copy_from_slice(&a);
+                Ok(())
+            }
+            Rgba8Unorm => {
+                let c: LinearRgba = color.into();
+                let a = c.to_u8_array();
+                self.data[start..start + components].copy_from_slice(&a);
+                Ok(())
+            }
+            Rgba8UnormSrgb => {
+                let c: Srgba = color.into();
+                let a = c.to_u8_array();
+                self.data[start..start + components].copy_from_slice(&a);
+                Ok(())
+            }
+            f => {
+                if f.is_compressed() {
+                    Err(PixelError::CompressionNotSupported)
+                } else if f.has_depth_aspect() {
+                    Err(PixelError::DepthNotSupported)
+                } else if f.has_stencil_aspect() {
+                    Err(PixelError::StencilNotSupported)
+                } else {
+                    todo!("Fix {f:?}");
+                }
+            }
+        }
+    }
+
+    pub fn from_pixels<C: Into<LinearRgba> + Copy>(colors: &[C], image_width_pixels: usize) -> Result<Self, PixelError> {
+        let format = TextureFormat::Rgba8Unorm;
+        let mut data: Vec<u8> = Vec::with_capacity(colors.len() * 4);
+        data.resize(data.capacity(), 0u8);
+        let mut start = 0;
+        let components = format.components() as usize;
+        if colors.len() % image_width_pixels != 0 {
+            return Err(PixelError::WidthNotDivisible);
+        }
+        let extent = Extent3d {
+            width: image_width_pixels as u32,
+            height: (colors.len() / image_width_pixels) as u32,
+            depth_or_array_layers: 1,
+        };
+        for c in colors {
+            let a: [u8; 4] = (*c).into().to_u8_array();
+            data[start..start + components].copy_from_slice(&a[0..4]);
+            start += components;
+        }
+        Ok(Image::new_fill(
+            extent,
+            TextureDimension::D2,
+            &data,
+            format,
+            RenderAssetUsages::MAIN_WORLD,
+        ))
+    }
+
+    pub fn pixels<R: RangeBounds<usize>>(&self, range: R) -> Result<PixelIter, PixelError> {
+        let index = match range.start_bound() {
+            Bound::Unbounded => 0,
+            Bound::Included(i) => *i,
+            Bound::Excluded(j) => j + 1,
+        };
+
+        let end = match range.end_bound() {
+            Bound::Unbounded => None,
+            Bound::Included(i) => Some(i + 1),
+            Bound::Excluded(j) => Some(*j),
+        };
+        self._pixels(index, end)
+    }
+
+    fn _pixels(&self, index: usize, end: Option<usize>) -> Result<PixelIter, PixelError> {
+        use TextureFormat::*;
+        let format = self.texture_descriptor.format;
+        let components = format.components() as usize;
+        match format {
+            Rgba32Float => {
+                let f = align_to::<u8, f32>(&self.data)?;
+                Ok(f.len() / components)
+            }
+            Rgba8Unorm => Ok(self.data.len() / components),
+            Rgba8UnormSrgb => Ok(self.data.len() / components),
+            f => {
+                if f.is_compressed() {
+                    Err(PixelError::CompressionNotSupported)
+                } else if f.has_depth_aspect() {
+                    Err(PixelError::DepthNotSupported)
+                } else if f.has_stencil_aspect() {
+                    Err(PixelError::StencilNotSupported)
+                } else {
+                    todo!("Fix {f:?}");
+                }
+            }
+        }
+        .and_then(|max_length| {
+            let end = end.unwrap_or(max_length);
+            if index >= max_length || end > max_length {
+                Err(PixelError::InvalidRange)
+            } else {
+                Ok(PixelIter {
+                    image: self,
+                    index,
+                    end,
+                })
+            }
+        })
+    }
 }
 
 fn align_to<T, U>(slice: &[T]) -> Result<&[U], PixelError> {
@@ -79,225 +318,13 @@ impl<'a> Iterator for PixelIter<'a> {
                     let mut a = [0u8; 4];
                     a.copy_from_slice(&self.image.data[start..start + components]);
                     Some(LinearRgba::from_u8_array(a).into())
-                },
+                }
                 Rgba8UnormSrgb => {
                     let mut a = [0u8; 4];
                     a.copy_from_slice(&self.image.data[start..start + components]);
                     Some(Srgba::from_u8_array(a).into())
-                },
-                _ => {
-                    None
                 }
-            }
-        }
-    }
-}
-
-pub enum PixelLoc {
-    Linear { index: usize },
-    Cartesian { x: usize, y: usize }
-}
-
-impl PixelLoc {
-    fn index(&self, extent: &Extent3d) -> Option<usize> {
-        match self {
-            Self::Linear { index } => (*index < (extent.width * extent.height) as usize).then_some(*index),
-            Self::Cartesian { x, y } => (*x < extent.width as usize && *y < extent.height as usize).then_some(y * extent.width as usize + x)
-        }
-    }
-}
-
-impl From<usize> for PixelLoc {
-    fn from(index: usize) -> Self {
-        Self::Linear { index }
-    }
-}
-
-impl From<(usize, usize)> for PixelLoc {
-    fn from((x, y): (usize, usize)) -> Self {
-        Self::Cartesian { x, y }
-    }
-}
-
-impl From<UVec2> for PixelLoc {
-    fn from(v: UVec2) -> Self {
-        Self::Cartesian { x: v.x as usize, y: v.y as usize }
-    }
-}
-
-impl Image {
-
-    pub fn pixels<R: RangeBounds<usize>>(&self, range: R) -> Result<PixelIter, PixelError> {
-        let index = match range.start_bound() {
-            Bound::Unbounded => 0,
-            Bound::Included(i) => *i,
-            Bound::Excluded(j) => j + 1
-        };
-
-        let end = match range.end_bound() {
-            Bound::Unbounded => None,
-            Bound::Included(i) => Some(i + 1),
-            Bound::Excluded(j) => Some(*j)
-        };
-        self._pixels(index, end)
-    }
-
-    fn _pixels(&self, index: usize, end: Option<usize>) -> Result<PixelIter, PixelError> {
-        use TextureFormat::*;
-        let format = self.texture_descriptor.format;
-        let components = format.components() as usize;
-        match format {
-            Rgba32Float => {
-                let f = align_to::<u8, f32>(&self.data)?;
-                Ok(f.len() / components)
-            }
-            Rgba8Unorm => {
-                Ok(self.data.len() / components)
-            },
-            Rgba8UnormSrgb => {
-                Ok(self.data.len() / components)
-            },
-            f => {
-                if f.is_compressed() {
-                    Err(PixelError::CompressionNotSupported)
-                } else if f.has_depth_aspect() {
-                    Err(PixelError::DepthNotSupported)
-                } else if f.has_stencil_aspect() {
-                    Err(PixelError::StencilNotSupported)
-                } else {
-                    todo!("Fix {f:?}");
-                }
-            }
-        }.and_then(|max_length| {
-            let end = end.unwrap_or(max_length);
-            if index >= max_length || end > max_length {
-                Err(PixelError::InvalidRange)
-            } else {
-                Ok(PixelIter { image: self, index, end })
-            }
-        })
-    }
-
-    pub fn get_pixel(&self, location: impl Into<PixelLoc>) -> Result<Color, PixelError> {
-        self._get_pixel(location.into())
-    }
-
-    fn _get_pixel(&self, location: PixelLoc) -> Result<Color, PixelError> {
-        use TextureFormat::*;
-        let image_size: Extent3d = self.texture_descriptor.size;
-        let format = self.texture_descriptor.format;
-        let components = format.components() as usize;
-        let pixel_size = format.pixel_size() as usize;
-        let start = location.index(&image_size).ok_or(PixelError::InvalidLocation)?;
-        match format {
-            Rgba32Float => {
-                let floats = align_to::<u8, f32>(&self.data)?;
-                let mut a = [0.0f32; 4];
-                a.copy_from_slice(&floats[start..start + components]);
-                Ok(LinearRgba::from_f32_array(a).into())
-            }
-            R8Unorm => {
-                let mut a: [u8; 4] = [0, 0, 0, u8::MAX];
-                a[0..1].copy_from_slice(&self.data[start..start + pixel_size]);
-                Ok(LinearRgba::from_u8_array(a).into())
-            },
-            R8Snorm => {
-                let signed = align_to::<u8, i8>(&self.data)?;
-                let mut a: [i8; 4] = [0, 0, 0, i8::MAX];
-                a[0..1].copy_from_slice(&signed[start..start + pixel_size]);
-                Ok(LinearRgba::new(
-                    a[0] as f32 / i8::MAX as f32,
-                    a[1] as f32 / i8::MAX as f32,
-                    a[2] as f32 / i8::MAX as f32,
-                    a[3] as f32 / i8::MAX as f32,
-                ).into())
-            },
-            R8Uint => {
-                let mut a: [u8; 4] = [0, 0, 0, u8::MAX];
-                a[0..1].copy_from_slice(&self.data[start..start + pixel_size]);
-                Ok(LinearRgba::new(
-                    a[0] as f32,
-                    a[1] as f32,
-                    a[2] as f32,
-                    a[3] as f32,
-                ).into())
-            },
-            R8Sint => {
-                let signed = align_to::<u8, i8>(&self.data)?;
-                let mut a: [i8; 4] = [0, 0, 0, 127];
-                a[0..1].copy_from_slice(&signed[start..start + pixel_size]);
-                Ok(LinearRgba::new(
-                    a[0] as f32,
-                    a[1] as f32,
-                    a[2] as f32,
-                    a[3] as f32,
-                ).into())
-            },
-            Rgba8Unorm => {
-                let mut a = [0u8; 4];
-                a.copy_from_slice(&self.data[start..start + pixel_size]);
-                Ok(LinearRgba::from_u8_array(a).into())
-            },
-            Rgba8UnormSrgb => {
-                let mut a = [0u8; 4];
-                a.copy_from_slice(&self.data[start..start + pixel_size]);
-                Ok(Srgba::from_u8_array(a).into())
-            },
-            f => {
-                if f.is_compressed() {
-                    Err(PixelError::CompressionNotSupported)
-                } else if f.has_depth_aspect() {
-                    Err(PixelError::DepthNotSupported)
-                } else if f.has_stencil_aspect() {
-                    Err(PixelError::StencilNotSupported)
-                } else {
-                    todo!("Fix {f:?}");
-                }
-            }
-        }
-    }
-
-    pub fn set_pixel(&mut self, location: impl Into<PixelLoc>, color: impl Into<Color>) -> Result<(), PixelError> {
-        self._set_pixel(location.into(), color.into())
-    }
-
-    fn _set_pixel(&mut self, location: PixelLoc, color: Color) -> Result<(), PixelError> {
-        use TextureFormat::*;
-        let image_size: Extent3d = self.texture_descriptor.size;
-        let format = self.texture_descriptor.format;
-        let components = format.components() as usize;
-        let pixel_size = format.pixel_size() as usize;
-        let start = location.index(&image_size).ok_or(PixelError::InvalidLocation)?;
-        match format {
-            Rgba32Float => {
-                let floats = align_to_mut::<u8, f32>(&mut self.data)?;
-                let c: LinearRgba = color.into();
-                let a = c.to_f32_array();
-                floats[start..start + components].copy_from_slice(&a);
-                Ok(())
-            }
-            Rgba8Unorm => {
-                let c: LinearRgba = color.into();
-                let a = c.to_u8_array();
-                self.data[start..start + components].copy_from_slice(&a);
-                Ok(())
-            },
-            Rgba8UnormSrgb => {
-                let c: Srgba = color.into();
-                let a = c.to_u8_array();
-                self.data[start..start + components].copy_from_slice(&a);
-                Ok(())
-            },
-            f => {
-                if f.is_compressed() {
-                    Err(PixelError::CompressionNotSupported)
-                } else if f.has_depth_aspect() {
-                    Err(PixelError::DepthNotSupported)
-                } else if f.has_stencil_aspect() {
-                    Err(PixelError::StencilNotSupported)
-                } else {
-                    todo!("Fix {f:?}");
-                }
+                _ => None,
             }
         }
     }
@@ -306,6 +333,7 @@ impl Image {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::{render_asset::RenderAssetUsages, render_resource::TextureDimension};
 
     #[test]
     fn test_rgba8unorm_size() {
@@ -327,23 +355,32 @@ mod test {
         assert_eq!(image.texture_descriptor.size.width, 1);
         assert_eq!(image.texture_descriptor.size.height, 1);
         // assert_eq!(image.get_pixel(0, 0).unwrap(), Srgba::from(Color::WHITE));
-        assert_eq!(image.get_pixel(UVec2::new(0, 0)).unwrap(), Srgba::WHITE.into());
-        assert_eq!(image.get_pixel(UVec2::new(1, 0)).unwrap_err(), PixelError::InvalidLocation);
-        assert_eq!(image.get_pixel(UVec2::new(0, 1)).unwrap_err(), PixelError::InvalidLocation);
+        assert_eq!(
+            image.get_pixel(UVec2::new(0, 0)).unwrap(),
+            Srgba::WHITE.into()
+        );
+        assert_eq!(
+            image.get_pixel(UVec2::new(1, 0)).unwrap_err(),
+            PixelError::InvalidLocation
+        );
+        assert_eq!(
+            image.get_pixel(UVec2::new(0, 1)).unwrap_err(),
+            PixelError::InvalidLocation
+        );
     }
 
     #[test]
     fn test_align_to_from_f32() {
         let pixel = [0.0, 0.0, 0.0, 1.0];
-        assert!(&align_to::<f32,u8>(&pixel).is_ok());
+        assert!(&align_to::<f32, u8>(&pixel).is_ok());
 
         // We can always go to u8 from f32.
         let pixel = [0.0, 0.0, 0.0, 1.0, 0.0];
-        assert!(&align_to::<f32,u8>(&pixel).is_ok());
+        assert!(&align_to::<f32, u8>(&pixel).is_ok());
 
         // We can always go to u8 from f32.
         let pixel = [0.0, 0.0, 0.0];
-        assert!(&align_to::<f32,u8>(&pixel).is_ok());
+        assert!(&align_to::<f32, u8>(&pixel).is_ok());
     }
 
     #[test]
@@ -355,16 +392,21 @@ mod test {
         // assert!(suffix.is_empty());
         // assert_eq!(aligned.len(), 1);
 
-        assert!(align_to::<u8,f32>(&pixel).is_ok());
+        assert!(align_to::<u8, f32>(&pixel).is_ok());
 
         let pixel = [0u8; 17];
-        assert!(align_to::<u8,f32>(&pixel).is_err());
+        assert!(align_to::<u8, f32>(&pixel).is_err());
 
         let pixel = [0u8; 15];
-        assert!(align_to::<u8,f32>(&pixel).is_err());
+        assert!(align_to::<u8, f32>(&pixel).is_err());
     }
 
-    fn image_from<T>(width: u32, height: u32, format: TextureFormat, data: &[T]) -> Result<Image, PixelError> {
+    fn image_from<T>(
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        data: &[T],
+    ) -> Result<Image, PixelError> {
         let size = Extent3d {
             width,
             height,
@@ -373,7 +415,7 @@ mod test {
         Ok(Image::new_fill(
             size,
             TextureDimension::D2,
-            align_to::<T,u8>(data)?,
+            align_to::<T, u8>(data)?,
             format,
             RenderAssetUsages::MAIN_WORLD,
         ))
@@ -384,9 +426,12 @@ mod test {
         let pixel = [0.0, 0.0, 0.0, 1.0];
         // FIXME: Spooky. If the next line is removed, the following image_from() will fail.
         // Must have to do with alignment.
-        assert_eq!(align_to::<f32,u8>(&pixel).unwrap().len(), 16);
+        assert_eq!(align_to::<f32, u8>(&pixel).unwrap().len(), 16);
         let image = image_from(1, 1, TextureFormat::Rgba32Float, &pixel).unwrap();
-        assert_eq!(image.get_pixel(UVec2::new(0, 0)).unwrap(), LinearRgba::BLACK.into());
+        assert_eq!(
+            image.get_pixel(UVec2::new(0, 0)).unwrap(),
+            LinearRgba::BLACK.into()
+        );
     }
 
     #[test]
@@ -394,7 +439,7 @@ mod test {
         let pixel = [0.0, 0.0, 0.0, 1.0];
         // FIXME: Spooky. If the next line is removed, the following image_from() will fail.
         // Must have to do with alignment.
-        assert_eq!(align_to::<f32,u8>(&pixel).unwrap().len(), 16);
+        assert_eq!(align_to::<f32, u8>(&pixel).unwrap().len(), 16);
         let image = image_from(1, 1, TextureFormat::Rgba32Float, &pixel).unwrap();
         let mut pixels = image.pixels(..).unwrap();
         assert_eq!(pixels.next().unwrap(), LinearRgba::BLACK.into());
@@ -413,8 +458,8 @@ mod test {
     #[test]
     fn test_r8image() {
         let pixel = [255u8];
-        // FIXME: Spooky. If the next line is removed, the following image_from() will fail.
-        // Must have to do with alignment.
+        // FIXME: Spooky. If the next line is removed, the following
+        // image_from() will fail. Must have to do with alignment.
         let image = image_from(1, 1, TextureFormat::R8Unorm, &pixel).unwrap();
         assert_eq!(image.get_pixel(0).unwrap(), LinearRgba::RED.into());
 
@@ -427,5 +472,11 @@ mod test {
 
         let image = image_from(1, 1, TextureFormat::R8Sint, &pixel).unwrap();
         assert_eq!(get_rgba(&image, 0).red, i8::MAX as f32);
+    }
+
+    #[test]
+    fn from_pixels() {
+        let image = Image::from_pixels(&[LinearRgba::RED], 1).unwrap();
+        assert_eq!(image.get_pixel(0).unwrap(), LinearRgba::RED.into());
     }
 }

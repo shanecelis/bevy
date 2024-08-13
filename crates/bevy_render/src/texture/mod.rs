@@ -11,10 +11,10 @@ mod fallback_image;
 mod hdr_texture_loader;
 #[allow(clippy::module_inception)]
 mod image;
-mod pixel;
 mod image_loader;
 #[cfg(feature = "ktx2")]
 mod ktx2;
+mod pixel;
 mod texture_attachment;
 mod texture_cache;
 
