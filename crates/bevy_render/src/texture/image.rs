@@ -7,16 +7,16 @@ use super::ktx2::*;
 
 use crate::{
     render_asset::{PrepareAssetError, RenderAsset, RenderAssetUsages},
-    color::Color,
     render_resource::{Sampler, Texture, TextureView},
     renderer::{RenderDevice, RenderQueue},
     texture::BevyDefault,
 };
+use bevy_color::Color;
 use bevy_asset::Asset;
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::system::{lifetimeless::SRes, Resource, SystemParamItem};
 use bevy_math::{AspectRatio, UVec2, Vec2, UVec3};
-use bevy_reflect::Reflect;
+use bevy_reflect::{Reflect, std_traits::ReflectDefault};
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 use thiserror::Error;

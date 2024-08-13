@@ -509,17 +509,6 @@ category = "2D Rendering"
 wasm = true
 
 [[example]]
-name = "2d_gizmos"
-path = "examples/2d/2d_gizmos.rs"
-doc-scrape-examples = true
-
-[package.metadata.example.2d_gizmos]
-name = "2D Gizmos"
-description = "A scene showcasing 2D gizmos"
-category = "2D Rendering"
-wasm = true
-
-[[example]]
 name = "sprite"
 path = "examples/2d/sprite.rs"
 doc-scrape-examples = true
