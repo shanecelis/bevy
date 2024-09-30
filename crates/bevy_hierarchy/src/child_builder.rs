@@ -1,4 +1,5 @@
 use crate::{Children, HierarchyEvent, Parent};
+use bevy_utils::tracing::warn;
 use bevy_ecs::{
     bundle::Bundle,
     entity::Entity,
@@ -7,6 +8,7 @@ use bevy_ecs::{
     world::{Command, EntityWorldMut, World},
 };
 use smallvec::{smallvec, SmallVec};
+use core::panic::Location;
 
 // Do not use `world.send_event_batch` as it prints error message when the Events are not available in the world,
 // even though it's a valid use case to execute commands on a world without events. Loading a GLTF file for example
@@ -198,8 +200,14 @@ pub struct AddChildren {
 }
 
 impl Command for AddChildren {
+    #[track_caller]
     fn apply(self, world: &mut World) {
-        world.entity_mut(self.parent).add_children(&self.children);
+        let caller = Location::caller();
+        if let Some(mut entity) = world.get_entity_mut(self.parent) {
+             entity.add_children(&self.children);
+        } else {
+            warn!("error[B0003]: {caller}: Could not add children to entity {:?} because it doesn't exist in this World. See: https://bevyengine.org/learn/errors/b0003", self.parent);
+        }
     }
 }
 
