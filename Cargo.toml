@@ -2490,6 +2490,11 @@ name = "custom_post_processing"
 path = "examples/shader/custom_post_processing.rs"
 doc-scrape-examples = true
 
+[[example]]
+name = "viewport_post_processing"
+path = "examples/shader/viewport_post_processing.rs"
+doc-scrape-examples = false
+
 [package.metadata.example.custom_post_processing]
 name = "Post Processing - Custom Render Pass"
 description = "A custom post processing effect, using a custom render pass that runs after the main pass"

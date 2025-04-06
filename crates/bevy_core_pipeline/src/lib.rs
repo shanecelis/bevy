@@ -16,6 +16,7 @@ pub mod core_3d;
 pub mod deferred;
 pub mod dof;
 pub mod fullscreen_vertex_shader;
+pub mod viewport_vertex_shader;
 pub mod fxaa;
 pub mod motion_blur;
 pub mod msaa_writeback;
@@ -64,6 +65,7 @@ use crate::{
     deferred::copy_lighting_id::CopyDeferredLightingIdPlugin,
     dof::DepthOfFieldPlugin,
     fullscreen_vertex_shader::FULLSCREEN_SHADER_HANDLE,
+    viewport_vertex_shader::VIEWPORT_SHADER_HANDLE,
     fxaa::FxaaPlugin,
     motion_blur::MotionBlurPlugin,
     msaa_writeback::MsaaWritebackPlugin,
@@ -87,6 +89,12 @@ impl Plugin for CorePipelinePlugin {
             app,
             FULLSCREEN_SHADER_HANDLE,
             "fullscreen_vertex_shader/fullscreen.wgsl",
+            Shader::from_wgsl
+        );
+        load_internal_asset!(
+            app,
+            VIEWPORT_SHADER_HANDLE,
+            "viewport_vertex_shader/viewport.wgsl",
             Shader::from_wgsl
         );
 
