@@ -10,19 +10,19 @@ struct ViewportVertexOutput {
     uv: vec2<f32>,
 };
 
-// This vertex shader produces the following, when drawn using indices 0..6:
+// This vertex shader produces the following UVs, when drawn using indices 0..6:
 //
-//  1 |  0-----x.....2
-//  0 |  |  s  |  . ´4
-// -1 |  x_____x´
-// -2 |  :  .´
-// -3 |  1´5         3
+//  0 |  0-----------2
+//    |  |        . ´4
+//    |  |  a  .´    |
+//    |  |  .´  b    |
+//  1 |  1´5_________3
 //    +---------------
-//      -1  0  1  2  3
+//       0           1
 //
-// The axes are clip-space x and y. The region marked s is the visible region.
-// The digits in the corners of the right-angled triangle are the vertex
-// indices.
+// The axes are UV-space x and y. The region marked a is the upper-left
+// triangle. The region marked b is the bottom-right triangle. The digits in the
+// corners of the right-angled triangle are the vertex indices.
 //
 // The top-left has UV 0,0, the bottom-left has 0,2, and the top-right has 2,0.
 // This means that the UV gets interpolated to 1,1 at the bottom-right corner
