@@ -24,7 +24,7 @@ struct ViewportVertexOutput {
 // region marked b is the bottom-right triangle. The digits in the corners of
 // the triangles are the vertex indices.
 //
-// The UV vectors can be converted clip-space vertices to cover the entire
+// The UV vectors can be converted to clip-space vertices to cover the entire
 // screen with the following code:
 //
 // ```wgsl
