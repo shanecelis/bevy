@@ -5,7 +5,7 @@ use bevy_math::Vec3;
 use bevy_reflect::prelude::*;
 
 /// The way Bevy manages the sound playback.
-#[derive(Debug, Clone, Copy, Reflect)]
+#[derive(Debug, Clone, Copy, Reflect, PartialEq, Eq)]
 #[reflect(Clone)]
 pub enum PlaybackMode {
     /// Play the sound once. Do nothing when it ends.
