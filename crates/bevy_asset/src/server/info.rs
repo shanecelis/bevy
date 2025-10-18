@@ -481,7 +481,13 @@ impl AssetInfos {
                             .loader_dependents
                             .entry(loader_dependency.clone())
                             .or_default();
-                        dependents.insert(asset_path.clone());
+                        // assert_ne!(loader_dependency, asset_path,
+                        //            "Asset cannot treat itself as a dependent");
+                        if loader_dependency != asset_path {
+                            dependents.insert(asset_path.clone());
+                        } else {
+                            warn!("Asset '{:?}' wants to treat itself as a dependency", &asset_path);
+                        }
                     }
                 }
             }

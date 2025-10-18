@@ -37,7 +37,7 @@ use loaders::*;
 use parking_lot::{RwLock, RwLockWriteGuard};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Loads and tracks the state of [`Asset`] values from a configured [`AssetReader`](crate::io::AssetReader).
 /// This can be used to kick off new asset loads and retrieve their current load states.
@@ -1676,6 +1676,10 @@ pub fn handle_internal_asset_events(world: &mut World) {
         ) {
             if let Some(dependents) = infos.loader_dependents.get(asset_path) {
                 for dependent in dependents {
+                    if asset_path == dependent {
+                        warn!("The asset path '{:?}' contains itself as a dependent", asset_path);
+                        continue;
+                    }
                     paths_to_reload.insert(dependent.to_owned());
                     queue_ancestors(dependent, infos, paths_to_reload);
                 }
