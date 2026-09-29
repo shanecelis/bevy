@@ -140,7 +140,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         .with_settings(|settings: &mut ImageLoaderSettings| {
             settings.sampler = ImageSampler::nearest();
         })
-        .load("textures/slice_square_4_rainbow.png");
+        .load("textures/slice_square_3.png");
 
     spawn_sprites(
         &mut commands,
