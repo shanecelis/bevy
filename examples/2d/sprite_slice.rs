@@ -135,12 +135,10 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     let handle_1 = asset_server.load("textures/slice_square.png");
     let handle_2 = asset_server.load("textures/slice_square_2.png");
-    let handle_3 = asset_server
-        .load_builder()
-        .with_settings(|settings: &mut ImageLoaderSettings| {
-            settings.sampler = ImageSampler::nearest();
-        })
-        .load("textures/slice_square_3.png");
+    let handle_3 = asset_server.load_with_settings("textures/slice_square_3.png",
+                                                   |settings: &mut ImageLoaderSettings| {
+                                                       settings.sampler = ImageSampler::nearest();
+                                                   });
 
     spawn_sprites(
         &mut commands,
